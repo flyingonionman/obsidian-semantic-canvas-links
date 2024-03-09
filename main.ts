@@ -14,11 +14,15 @@ interface CanvasNodeMap{
 	groups?: Array< CanvasGroupData >
 }
 
+interface CanvasMap extends CanvasNodeMap{
+	edges?: Array< CanvasEdgeData >
+}
+
 const DEFAULT_SETTINGS: MyPluginSettings = {
 	mySetting: 'default'
 }
 
-export default class HelloWorldPlugin extends Plugin {
+export default class CanvasPlugin extends Plugin {
 	settings: MyPluginSettings;
 
 	async onload() {
@@ -102,33 +106,17 @@ export default class HelloWorldPlugin extends Plugin {
 
 			// await this.getFrontMatterObj(file);
 
-			let data = await getCanvasData(file);
+			let data = await CanvasPlugin.getCanvasMap(file);
 			console.log(data);
 			
-
 		});
 
-		async function getCanvasData(file: TFile | null): Promise<{nodes: Array<CanvasNodeData>, edges: Array<CanvasEdgeData>} | undefined> {
-			if (file === null || file.extension !== 'canvas') return;
-			let rawCanvasText = await file.vault.cachedRead(file);
-			let canvas = JSON.parse(rawCanvasText);
-			return canvas
-		}
-
-		async function getCanvasNodes(file: TFile | null): Promise<CanvasNodeMap | undefined> {
-			let data = await getCanvasData(file);
-			if(data === undefined) return undefined;
-			let map: CanvasNodeMap = {
-				cards: data.nodes.filter((node)=> node.type == 'text')
-			}
-		}
-
 		// a silly simple appending function
-		function addYouKnow(file: TFile) {
-			file.vault.process(file, (data) => {
-				return data + "... you know?"
-			})
-		}
+		// function addYouKnow(file: TFile) {
+		// 	file.vault.process(file, (data) => {
+		// 		return data + "... you know?"
+		// 	})
+		// }
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		// this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
@@ -150,6 +138,47 @@ export default class HelloWorldPlugin extends Plugin {
 			fm.newProp = "Hello new property!"
 		})
 
+	}
+
+	static async getCanvasData(file: TFile | null): Promise<{nodes: Array<CanvasNodeData>, edges: Array<CanvasEdgeData>} | undefined> {
+		if (file === null || file.extension !== 'canvas') return;
+		let rawCanvasText = await file.vault.cachedRead(file);
+		let canvas = JSON.parse(rawCanvasText);
+		return canvas
+	}
+
+	static async getCanvasNodes(file: TFile | null): Promise<CanvasNodeMap | undefined> {
+		let data = await CanvasPlugin.getCanvasData(file);
+		if(data === undefined) return undefined;
+		let map: CanvasNodeMap = {
+			cards: (<CanvasTextData[]> data.nodes.filter((node)=> node.type == 'text')),
+			files: (<CanvasFileData[]> data.nodes.filter((node)=> node.type == 'file')),
+			links: (<CanvasLinkData[]> data.nodes.filter((node)=> node.type == 'link')),
+			groups: (<CanvasGroupData[]> data.nodes.filter((node)=> node.type == 'group')),
+		}
+		return map;
+	}
+
+	static async getCanvasEdges(file: TFile | null): Promise<CanvasEdgeData[] | undefined> {
+		let data = await CanvasPlugin.getCanvasData(file);
+		if(data === undefined) return undefined;
+		return data.edges
+	}
+
+	static async getCanvasMap(file: TFile | null): Promise<CanvasMap | undefined>{
+		if(!file) return undefined;
+
+		let map: CanvasMap | undefined;
+		let edges: CanvasEdgeData[] | undefined;
+
+		await Promise.all([
+			map = await CanvasPlugin.getCanvasNodes(file),
+			edges = await CanvasPlugin.getCanvasEdges(file),
+		])
+		
+		map!.edges = edges;
+
+		return map
 	}
 
 
@@ -183,9 +212,9 @@ class SampleModal extends Modal {
 }
 
 class SampleSettingTab extends PluginSettingTab {
-	plugin: HelloWorldPlugin;
+	plugin: CanvasPlugin;
 
-	constructor(app: App, plugin: HelloWorldPlugin) {
+	constructor(app: App, plugin: CanvasPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}

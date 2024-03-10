@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { App, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 import { CanvasEdgeData, CanvasFileData, CanvasGroupData, CanvasLinkData, CanvasNodeData, CanvasTextData } from 'canvas';
 
 interface SemanticCanvasPluginSettings {
@@ -20,13 +20,14 @@ interface CanvasNodeMap {
 }
 
 interface CanvasMap extends CanvasNodeMap {
-	edges?: Array<CanvasEdgeData>
+	edges?: Array<CanvasEdgeData & {isBidirectional: boolean}>
 }
 
 type ConnectionProps = {
 	otherSideId?: string;
 	otherSide?: CanvasNodeData
 	type?: 'card' | 'url' | 'file' | 'group';
+	isBidirectional?: boolean;
 	propLbl?: string;
 	propVal?: string;
 }
@@ -52,12 +53,14 @@ class FileNode {
 		if (file.inGroups === undefined) file.inGroups = [];
 
 		let relevantIds = [file.id];
-		relevantIds = [file.id, ...file.inGroups.map((g: any) => g.id)]
+		relevantIds = [file.id, ...file.inGroups.map((g: any) => g.id)];
+
+		//#TODO - swap data.edges here with something that switches group IDs with a list of contained items
 
 		const relevantEdges = data.edges?.filter(edge => {
 			if (relevantIds.some(id => edge.fromNode == id)) return true
 			/* In case link is bi-directional */
-			if (relevantIds.some(id => edge.toNode == id && (edge.fromEnd === 'arrow' || edge.toEnd === 'none'))) return true
+			if (relevantIds.some(id => edge.toNode == id && edge.isBidirectional)) return true
 			return false
 		})
 
@@ -68,7 +71,8 @@ class FileNode {
 
 		let edges: ConnectionProps[] = relevantEdges?.map(edge => {
 			let newEdge: ConnectionProps = {
-				otherSideId: edge.toNode
+				otherSideId: edge.toNode,
+				isBidirectional: edge.isBidirectional
 			}
 			if (file.id === newEdge.otherSideId) newEdge.otherSideId = edge.fromNode;
 			newEdge.otherSide = data.cards?.find(card => card.id === newEdge.otherSideId);
@@ -91,6 +95,7 @@ class FileNode {
 			if (newEdge.otherSide === undefined) throw new Error('Could not find other side of edge');
 			if (newEdge.type === 'card') newEdge.propVal = newEdge.otherSide.text;
 			if (newEdge.type === 'url') newEdge.propVal = newEdge.otherSide.url;
+			if (newEdge.type === 'file') newEdge.propVal = convertToWikilink(newEdge.otherSide.file);
 			if (edge.label !== undefined) newEdge.propLbl = edge.label;
 			return newEdge
 		})!
@@ -103,6 +108,9 @@ class FileNode {
 		if (file.inGroups.length > 0 && settings.useGroups) {
 			this.propsToSet[settings.groupDefault] = file.inGroups.map((group: CanvasGroupData) => group.label);
 		}
+		
+		/* this -> group */
+
 
 		/* this -> card */
 		if (settings.useCards) {
@@ -126,7 +134,30 @@ class FileNode {
 			})
 		}
 		/* this -> note */
+		if (settings.useFiles) {
+			edges.filter(edge => edge.type === 'file').forEach(edge => {
+				if (!this.propsToSet.hasOwnProperty(edge.propLbl)) {
+					this.propsToSet[edge.propLbl!] = [edge.propVal];
+					return
+				}
+				this.propsToSet[edge.propLbl!].push(edge.propVal);
+				
+				/* Handle bi-directionality */
+				// if(edge.isBidirectional){
+					
+				// }
+			})
+		}
 
+		function convertToWikilink(filepath: string): string {
+			let split = filepath.split('.');
+			if(split[split.length-1] === 'md'){
+				let sansExtension = split.slice(0,-1);
+				split = sansExtension;
+			}
+			let noteRefString = split.join('.');
+			return "[[" + noteRefString + "]]";
+		}
 	}
 }
 
@@ -166,7 +197,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 		/* This adds a simple command that can be triggered anywhere */
 		this.addCommand({
 			id: 'set-canvas-to-note-properties',
-			name: 'Set Canvas to Note Properties (OVERWRITE)',
+			name: 'Overwrite Note Properties based on Canvas',
 			callback: () => {
 				// new SampleModal(this.app).open();
 				this.pushCanvasToNoteProperties(true);
@@ -176,7 +207,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 		/* This adds a simple command that can be triggered anywhere */
 		this.addCommand({
 			id: 'append-canvas-to-note-properties',
-			name: 'Append Canvas to Note Properties',
+			name: 'Append Nope Properties based on Canvas',
 			callback: () => {
 				// new SampleModal(this.app).open();
 				this.pushCanvasToNoteProperties(false);
@@ -247,11 +278,12 @@ export default class SemanticCanvasPlugin extends Plugin {
 				dedupedFileNodes.push(fileNode);
 				return
 			}
-			existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
+			// console.log(existing, fileNode);
+			if(fileNode.propsToSet !== null) existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
 		})
 
 		/* Remove any unaffected nodes before seeking files */
-		dedupedFileNodes = dedupedFileNodes.filter(fileNode => Object.keys(fileNode.propsToSet).length > 0);
+		dedupedFileNodes = dedupedFileNodes.filter(fileNode => fileNode.propsToSet && Object.keys(fileNode.propsToSet).length > 0);
 
 		// console.log(dedupedFileNodes);
 
@@ -277,13 +309,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 		actualFilesMap.forEach(fileMap => this.app.fileManager.processFrontMatter(fileMap.file, (frontmatter) => {
 			/* have to directly mutate this object, a bit tedious */
 			Object.keys(fileMap.props).forEach(key => {
-				if(overwrite){
-					frontmatter[key] = fileMap.props[key];
-					return
-				}
-
-				////#BUG - duplicating existing values - overwriting for now
-				if (!frontmatter.hasOwnProperty(key)) {
+				if(overwrite || !frontmatter.hasOwnProperty(key)) {
 					frontmatter[key] = fileMap.props[key];
 					return
 				}
@@ -291,7 +317,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 				//force array
 				if (!Array.isArray(frontmatter[key])) frontmatter[key] = [frontmatter[key]];
 
-				console.log(fileMap.props[key]);
+				fileMap.props[key] = fileMap.props[key].filter((val:any)=>!frontmatter[key].some((og:any)=>og===val))
 				frontmatter[key] = [...frontmatter[key], ...fileMap.props[key]];
 			})
 
@@ -305,24 +331,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 			})
 			return a;
 		}
-	}
-
-	async getFrontMatterObj(file: TFile | null) {
-		if (file === null) return;
-		let fm: any;
-		file.vault
-		await this.app.fileManager.processFrontMatter(file, (data: any) => {
-			fm = data;
-		})
-		return fm
-	}
-
-	addProperty = (file: TFile) => {
-		this.app.fileManager.processFrontMatter(file, (fm) => {
-			// console.log(fm);
-			fm.newProp = "Hello new property!"
-		})
-
 	}
 
 	static async getCanvasData(file: TFile | null): Promise<{ nodes: Array<CanvasNodeData>, edges: Array<CanvasEdgeData> } | undefined> {
@@ -378,6 +386,9 @@ export default class SemanticCanvasPlugin extends Plugin {
 	static async getCanvasEdges(file: TFile | null): Promise<CanvasEdgeData[] | undefined> {
 		let data = await SemanticCanvasPlugin.getCanvasData(file);
 		if (data === undefined) return undefined;
+		data.edges.forEach(edge=>{
+			edge.isBidirectional = (edge.fromEnd === 'arrow' || edge.toEnd === 'none')
+		})
 		return data.edges
 	}
 
@@ -394,7 +405,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		if (!map) return undefined;
 
-		map!.edges = edges;
+		map!.edges = edges as unknown as Array<CanvasEdgeData & {isBidirectional: boolean}>;
 
 		return map
 	}

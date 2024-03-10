@@ -1,41 +1,137 @@
 import { App, Editor, MarkdownView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 import { CanvasEdgeData, CanvasFileData, CanvasGroupData, CanvasLinkData, CanvasNodeData, CanvasTextData } from 'canvas';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface SemanticCanvasPluginSettings {
+	cardDefault: string;
+	fileDefault: string;
+	urlDefault: string;
+	groupDefault: string;
+	useCards: boolean;
+	useUrls: boolean;
+	useFiles: boolean;
+	useGroups: boolean;
 }
 
 interface CanvasNodeMap {
 	cards?: Array<CanvasTextData>,
-	files?: Array<CanvasFileData>,
+	files?: Array<CanvasFileData> & { inGroups?: Array<CanvasGroupData> },
 	links?: Array<CanvasLinkData>,
-	groups?: Array<CanvasGroupData>
+	groups?: Array<CanvasGroupData & { containedFiles?: Array<CanvasFileData> }>
 }
 
 interface CanvasMap extends CanvasNodeMap {
 	edges?: Array<CanvasEdgeData>
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+type ConnectionProps = {
+	otherSideId?: string;
+	otherSide?: CanvasNodeData
+	type?: 'card' | 'url' | 'file' | 'group';
+	propLbl?: string;
+	propVal?: string;
 }
 
-class CanvasBroker implements CanvasMap {
-	cards?: CanvasTextData[] | undefined;
-	files?: CanvasFileData[] | undefined;
-	links?: CanvasLinkData[] | undefined;
-	groups?: CanvasGroupData[] | undefined;
-	edges?: CanvasEdgeData[] | undefined;
-	constructor() {
-		new Notice('Loaded Canvas');
+const DEFAULT_SETTINGS: SemanticCanvasPluginSettings = {
+	cardDefault: 'cards',
+	fileDefault: 'files',
+	urlDefault: 'urls',
+	groupDefault: 'groups',
+	useCards: true,
+	useUrls: true,
+	useFiles: true,
+	useGroups: true
+}
+
+class FileNode {
+	filePath: string;
+	propsToSet: any;
+
+	constructor(file: CanvasFileData, data: CanvasMap, settings: SemanticCanvasPluginSettings) {
+		this.filePath = file.file;
+		this.propsToSet = {};
+		if (file.inGroups === undefined) file.inGroups = [];
+
+		let relevantIds = [file.id];
+		relevantIds = [file.id, ...file.inGroups.map((g: any) => g.id)]
+
+		const relevantEdges = data.edges?.filter(edge => {
+			if (relevantIds.some(id => edge.fromNode == id)) return true
+			/* In case link is bi-directional */
+			if (relevantIds.some(id => edge.toNode == id && (edge.fromEnd === 'arrow' || edge.toEnd === 'none'))) return true
+			return false
+		})
+
+		if (relevantEdges?.length === 0 && file.inGroups.length === 0) {
+			this.propsToSet = null;
+			return
+		}
+
+		let edges: ConnectionProps[] = relevantEdges?.map(edge => {
+			let newEdge: ConnectionProps = {
+				otherSideId: edge.toNode
+			}
+			if (file.id === newEdge.otherSideId) newEdge.otherSideId = edge.fromNode;
+			newEdge.otherSide = data.cards?.find(card => card.id === newEdge.otherSideId);
+			newEdge.type = 'card';
+			newEdge.propLbl = settings.cardDefault
+			if (newEdge.otherSide === undefined) {
+				newEdge.otherSide = data.links?.find(url => url.id === newEdge.otherSideId);
+				newEdge.type = 'url';
+				newEdge.propLbl = settings.urlDefault
+			}
+			if (newEdge.otherSide === undefined) {
+				newEdge.otherSide = data.files?.find(file => file.id === newEdge.otherSideId);
+				newEdge.type = 'file';
+				newEdge.propLbl = settings.fileDefault
+			}
+			if (newEdge.otherSide === undefined) {
+				newEdge.otherSide = data.groups?.find(group => group.id === newEdge.otherSideId);
+				newEdge.type = 'group';
+			}
+			if (newEdge.otherSide === undefined) throw new Error('Could not find other side of edge');
+			if (newEdge.type === 'card') newEdge.propVal = newEdge.otherSide.text;
+			if (newEdge.type === 'url') newEdge.propVal = newEdge.otherSide.url;
+			if (edge.label !== undefined) newEdge.propLbl = edge.label;
+			return newEdge
+		})!
+
+		// console.log(relevantEdges);
+
+		/* ALL PROPERTIES MUST BE ARRAYS OF STRINGS*/
+
+		/* this contained in group */
+		if (file.inGroups.length > 0 && settings.useGroups) {
+			this.propsToSet[settings.groupDefault] = file.inGroups.map((group: CanvasGroupData) => group.label);
+		}
+
+		/* this -> card */
+		if (settings.useCards) {
+			edges.filter(edge => edge.type === 'card').forEach(edge => {
+				if (!this.propsToSet.hasOwnProperty(edge.propLbl)) {
+					this.propsToSet[edge.propLbl!] = [edge.propVal];
+					return
+				}
+				this.propsToSet[edge.propLbl!].push(edge.propVal);
+			})
+		}
+
+		/* this -> url */
+		if (settings.useUrls) {
+			edges.filter(edge => edge.type === 'url').forEach(edge => {
+				if (!this.propsToSet.hasOwnProperty(edge.propLbl)) {
+					this.propsToSet[edge.propLbl!] = [edge.propVal];
+					return
+				}
+				this.propsToSet[edge.propLbl!].push(edge.propVal);
+			})
+		}
+		/* this -> note */
+
 	}
 }
 
-
-export default class CanvasPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class SemanticCanvasPlugin extends Plugin {
+	settings: SemanticCanvasPluginSettings;
 
 	async onload() {
 		await this.loadSettings();
@@ -43,35 +139,47 @@ export default class CanvasPlugin extends Plugin {
 		// this.registerEvent(
 		// 	this.app.workspace.on("editor-menu", (menu) => {
 		// 		console.log(menu)
-				// menu.addItem((item) => {
-				// 	item.setTitle('NOTE CONTEXT MENU CUSTOM ACTION')
-				// 		.setIcon('cloud')
-				// 		.onClick(() => {
-				// 			//@ts-ignore
-				// 			this.app.commands.executeCommandById(command.id);
-				// 		});
-				// });
+		// menu.addItem((item) => {
+		// 	item.setTitle('NOTE CONTEXT MENU CUSTOM ACTION')
+		// 		.setIcon('cloud')
+		// 		.onClick(() => {
+		// 			//@ts-ignore
+		// 			this.app.commands.executeCommandById(command.id);
+		// 		});
+		// });
 		// 	})
 		// );
 
 		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('cloud', 'Canvas Plugin', (evt: MouseEvent) => {
+		const ribbonIconEl = this.addRibbonIcon('right-arrow-with-tail', 'Push Canvas to Note Properties', (evt: MouseEvent) => {
 			// Called when the user clicks the icon.
-			this.pushCanvasToNoteProperties();
+			this.pushCanvasToNoteProperties(true);
 		});
+
 		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
+		// ribbonIconEl.addClass('my-plugin-ribbon-class'); // never figured out what this line did, seemingly nothing
 
 		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
 		// const statusBarItemEl = this.addStatusBarItem();
 		// statusBarItemEl.setText('Status Bar Text');
 
-		// This adds a simple command that can be triggered anywhere
+		/* This adds a simple command that can be triggered anywhere */
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
+			id: 'set-canvas-to-note-properties',
+			name: 'Set Canvas to Note Properties (OVERWRITE)',
 			callback: () => {
-				new SampleModal(this.app).open();
+				// new SampleModal(this.app).open();
+				this.pushCanvasToNoteProperties(true);
+			}
+		});
+
+		/* This adds a simple command that can be triggered anywhere */
+		this.addCommand({
+			id: 'append-canvas-to-note-properties',
+			name: 'Append Canvas to Note Properties',
+			callback: () => {
+				// new SampleModal(this.app).open();
+				this.pushCanvasToNoteProperties(false);
 			}
 		});
 
@@ -107,55 +215,96 @@ export default class CanvasPlugin extends Plugin {
 		// 	}
 		// });
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		// this.registerDomEvent(document, 'click', async (evt: MouseEvent) => {
-		// console.log('clicked, silently', evt);
-
-		/* Says the File's name!*/
-		// let file = this.app.workspace.getActiveFile();
-		// console.log(file?.path);
-		// console.log(new Date(file!.stat.ctime).toDateString());
-		// console.log(`The file is ${file?.stat.size} bytes in size`);
-
-		/* Appends '... you know?' to the end of a note */
-		// addYouKnow(file!);
-		// this.addProperty(file!);
-
-		// let files = this.app.vault.getFileByPath('Note A.md');
-		// console.log(files);
-
-		// await getNodes(file)
-
-		// await this.getFrontMatterObj(file);
-
-		// let data = await CanvasPlugin.getCanvasMap(file);
-		// console.log(data);
-
-		// });
-
-		// a silly simple appending function
-		// function addYouKnow(file: TFile) {
-		// 	file.vault.process(file, (data) => {
-		// 		return data + "... you know?"
-		// 	})
-		// }
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		// this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		/* This adds a settings tab so the user can configure various aspects of the plugin */
+		this.addSettingTab(new MySettingsTab(this.app, this));
 	}
 
-	async pushCanvasToNoteProperties() {
-
-		/* Says the File's name!*/
+	async pushCanvasToNoteProperties(overwrite: boolean) {
 		let file = this.app.workspace.getActiveFile();
-		let data = await CanvasPlugin.getCanvasMap(file);
-		console.log(data);
+		if (!file || file?.extension !== 'canvas') {
+			new Notice('Aborted: Active file is not Canvas');
+			return;
+		}
 
-		// new Notice('Hello world, from a Notice!');
+		let data = await SemanticCanvasPlugin.getCanvasMap(file);
+
+		// console.log(data);
+
+		if (!data) {
+			new Notice('Aborted: No Canvas data found');
+			return;
+		}
+
+		let fileNodes = data?.files?.map(file => new FileNode(file, data!, this.settings));
+
+		console.log(fileNodes);
+
+		/* De-dupe - if same file was on a canvas multiple times */
+		let dedupedFileNodes: FileNode[] = [];
+		fileNodes?.forEach(fileNode => {
+			let existing = dedupedFileNodes?.find(ogNodeList => ogNodeList.filePath === fileNode.filePath);
+			if (existing === undefined) {
+				dedupedFileNodes.push(fileNode);
+				return
+			}
+			existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
+		})
+
+		/* Remove any unaffected nodes before seeking files */
+		dedupedFileNodes = dedupedFileNodes.filter(fileNode => Object.keys(fileNode.propsToSet).length > 0);
+
+		// console.log(dedupedFileNodes);
+
+		let actualFilesMap: Array<any> = dedupedFileNodes.map(fileNode => {
+			return {
+				file: this.app.vault.getFileByPath(fileNode.filePath),
+				props: fileNode.propsToSet
+			}
+		});
+
+		/* Remove any non-markdown files before setting properties */
+		actualFilesMap = actualFilesMap.filter(fileMap => fileMap.file?.extension === 'md');
+
+		// console.log(actualFilesMap);
+
+		let propertyAddCount = 0;
+		actualFilesMap.forEach(fileMap => {
+			propertyAddCount = propertyAddCount + Object.keys(fileMap.props).length
+		})
+
+		let modifiedFileCount = actualFilesMap.length;
+
+		actualFilesMap.forEach(fileMap => this.app.fileManager.processFrontMatter(fileMap.file, (frontmatter) => {
+			/* have to directly mutate this object, a bit tedious */
+			Object.keys(fileMap.props).forEach(key => {
+				if(overwrite){
+					frontmatter[key] = fileMap.props[key];
+					return
+				}
+
+				////#BUG - duplicating existing values - overwriting for now
+				if (!frontmatter.hasOwnProperty(key)) {
+					frontmatter[key] = fileMap.props[key];
+					return
+				}
+
+				//force array
+				if (!Array.isArray(frontmatter[key])) frontmatter[key] = [frontmatter[key]];
+
+				console.log(fileMap.props[key]);
+				frontmatter[key] = [...frontmatter[key], ...fileMap.props[key]];
+			})
+
+		}));
+
+		new Notice(`Successfully set ${propertyAddCount} prop(s) in ${modifiedFileCount} file(s)`)
+
+		function mergeProps(a: any, b: any) {
+			Object.keys(b).forEach(key => {
+				if (a.hasOwnProperty(key)) a[key] = [...a[key], ...b[key]];
+			})
+			return a;
+		}
 	}
 
 	async getFrontMatterObj(file: TFile | null) {
@@ -184,7 +333,7 @@ export default class CanvasPlugin extends Plugin {
 	}
 
 	static async getCanvasNodes(file: TFile | null): Promise<CanvasNodeMap | undefined> {
-		let data = await CanvasPlugin.getCanvasData(file);
+		let data = await SemanticCanvasPlugin.getCanvasData(file);
 		if (data === undefined) return undefined;
 		let map: CanvasNodeMap = {
 			cards: (<CanvasTextData[]>data.nodes.filter((node) => node.type == 'text')),
@@ -192,11 +341,42 @@ export default class CanvasPlugin extends Plugin {
 			links: (<CanvasLinkData[]>data.nodes.filter((node) => node.type == 'link')),
 			groups: (<CanvasGroupData[]>data.nodes.filter((node) => node.type == 'group')),
 		}
+
+		/* Find wholly-contained file-type nodes & add to group */
+		map.groups?.forEach((group) => {
+			let filesToAdd: CanvasFileData[] = [];
+			map.files?.forEach((file) => {
+				if (groupContainsFile(group, file)) {
+					filesToAdd.push(file);
+					if (file.hasOwnProperty('inGroups')) {
+						file.inGroups.push(group)
+					} else {
+						file.inGroups = [group];
+					}
+				}
+			})
+			group.containedFiles = filesToAdd;
+		})
+
+		/**
+		 * Returns true if the Group's outer bounds wholly contain the file's outer bounds.
+		 * Mimicks the behavior in Obsidian
+		 * @param group 
+		 * @param file 
+		 */
+		function groupContainsFile(group: CanvasGroupData, file: CanvasFileData): boolean {
+			if (group.y > file.y) return false
+			if (group.y + group.height < file.y + file.height) return false
+			if (group.x > file.x) return false
+			if (group.x + group.width < file.x + file.width) return false
+			return true;
+		}
+
 		return map;
 	}
 
 	static async getCanvasEdges(file: TFile | null): Promise<CanvasEdgeData[] | undefined> {
-		let data = await CanvasPlugin.getCanvasData(file);
+		let data = await SemanticCanvasPlugin.getCanvasData(file);
 		if (data === undefined) return undefined;
 		return data.edges
 	}
@@ -208,8 +388,8 @@ export default class CanvasPlugin extends Plugin {
 		let edges: CanvasEdgeData[] | undefined;
 
 		await Promise.all([
-			map = await CanvasPlugin.getCanvasNodes(file),
-			edges = await CanvasPlugin.getCanvasEdges(file),
+			map = await SemanticCanvasPlugin.getCanvasNodes(file),
+			edges = await SemanticCanvasPlugin.getCanvasEdges(file),
 		])
 
 		if (!map) return undefined;
@@ -218,7 +398,6 @@ export default class CanvasPlugin extends Plugin {
 
 		return map
 	}
-
 
 	onunload() {
 
@@ -233,26 +412,26 @@ export default class CanvasPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+// class SampleModal extends Modal {
+// 	constructor(app: App) {
+// 		super(app);
+// 	}
 
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText('Your vault is: ' + app.vault.getName());
-	}
+// 	onOpen() {
+// 		const { contentEl } = this;
+// 		contentEl.setText('Your vault is: ' + app.vault.getName());
+// 	}
 
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
-	}
-}
+// 	onClose() {
+// 		const { contentEl } = this;
+// 		contentEl.empty();
+// 	}
+// }
 
-class SampleSettingTab extends PluginSettingTab {
-	plugin: CanvasPlugin;
+class MySettingsTab extends PluginSettingTab {
+	plugin: SemanticCanvasPlugin;
 
-	constructor(app: App, plugin: CanvasPlugin) {
+	constructor(app: App, plugin: SemanticCanvasPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -260,16 +439,91 @@ class SampleSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 
+		/* Clear existing content, if any */
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+			.setName('Set note properties for connections to Cards ')
+			.setDesc('Default: true')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useCards)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.useCards = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Default Property Label for connections to Cards')
+			.setDesc('Leave blank to only create properties for labeled edges. Default: cards')
+			.addText(text => text
+				.setPlaceholder('cards')
+				.setValue(this.plugin.settings.cardDefault)
+				.onChange(async (value) => {
+					this.plugin.settings.cardDefault = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Set note properties for connections to Web Embeds ')
+			.setDesc('Default: true')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useUrls)
+				.onChange(async (value) => {
+					this.plugin.settings.useUrls = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Default Property Label for connections to Urls')
+			.setDesc('Leave blank to only create properties for labeled edges. Default: urls')
+			.addText(text => text
+				.setPlaceholder('urls')
+				.setValue(this.plugin.settings.urlDefault)
+				.onChange(async (value) => {
+					this.plugin.settings.urlDefault = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Set note properties for connections to Files')
+			.setDesc('Default: true')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useFiles)
+				.onChange(async (value) => {
+					this.plugin.settings.useFiles = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Default Property Label for connections to Files')
+			.setDesc('Leave blank to only create properties for labeled edges. Default: files')
+			.addText(text => text
+				.setPlaceholder('files')
+				.setValue(this.plugin.settings.fileDefault)
+				.onChange(async (value) => {
+					this.plugin.settings.fileDefault = value;
+					await this.plugin.saveSettings();
+				}));
+
+
+		new Setting(containerEl)
+			.setName('Set note properties based on containment in groups')
+			.setDesc('Default: true')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useGroups)
+				.onChange(async (value) => {
+					this.plugin.settings.useGroups = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Default Property Label for containment in Groups')
+			.setDesc('Default: groups')
+			.addText(text => text
+				.setPlaceholder('groups')
+				.setValue(this.plugin.settings.groupDefault)
+				.onChange(async (value) => {
+					this.plugin.settings.groupDefault = value;
 					await this.plugin.saveSettings();
 				}));
 	}

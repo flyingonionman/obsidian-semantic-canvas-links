@@ -1,5 +1,5 @@
 {
-	"name": "obsidian-canvas-property-linker",
+	"name": "obsidian-semantic-canvas-plugin",
 	"version": "1.0.0",
 	"description": "This is a plugin for Obsidian (https://obsidian.md) to use canvases to link notes together and edit their properties",
 	"main": "main.js",

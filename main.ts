@@ -15,12 +15,12 @@ interface SemanticCanvasPluginSettings {
 interface CanvasNodeMap {
 	cards?: Array<CanvasTextData>,
 	files?: Array<CanvasFileData> & { inGroups?: Array<CanvasGroupData> },
-	links?: Array<CanvasLinkData>,
-	groups?: Array<CanvasGroupData & { containedFiles?: Array<CanvasFileData> }>
+	urls?: Array<CanvasLinkData>,
+	groups?: Array<CanvasGroupData>
 }
 
 interface CanvasMap extends CanvasNodeMap {
-	edges?: Array<CanvasEdgeData & {isBidirectional: boolean}>
+	edges?: Array<CanvasEdgeData & { isBidirectional: boolean }>
 }
 
 type ConnectionProps = {
@@ -79,7 +79,7 @@ class FileNode {
 			newEdge.type = 'card';
 			newEdge.propLbl = settings.cardDefault
 			if (newEdge.otherSide === undefined) {
-				newEdge.otherSide = data.links?.find(url => url.id === newEdge.otherSideId);
+				newEdge.otherSide = data.urls?.find(url => url.id === newEdge.otherSideId);
 				newEdge.type = 'url';
 				newEdge.propLbl = settings.urlDefault
 			}
@@ -108,7 +108,7 @@ class FileNode {
 		if (file.inGroups.length > 0 && settings.useGroups) {
 			this.propsToSet[settings.groupDefault] = file.inGroups.map((group: CanvasGroupData) => group.label);
 		}
-		
+
 		/* this -> group */
 
 
@@ -141,18 +141,18 @@ class FileNode {
 					return
 				}
 				this.propsToSet[edge.propLbl!].push(edge.propVal);
-				
+
 				/* Handle bi-directionality */
 				// if(edge.isBidirectional){
-					
+
 				// }
 			})
 		}
 
 		function convertToWikilink(filepath: string): string {
 			let split = filepath.split('.');
-			if(split[split.length-1] === 'md'){
-				let sansExtension = split.slice(0,-1);
+			if (split[split.length - 1] === 'md') {
+				let sansExtension = split.slice(0, -1);
 				split = sansExtension;
 			}
 			let noteRefString = split.join('.');
@@ -268,7 +268,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		let fileNodes = data?.files?.map(file => new FileNode(file, data!, this.settings));
 
-		console.log(fileNodes);
+		// console.log(fileNodes);
 
 		/* De-dupe - if same file was on a canvas multiple times */
 		let dedupedFileNodes: FileNode[] = [];
@@ -278,8 +278,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 				dedupedFileNodes.push(fileNode);
 				return
 			}
-			// console.log(existing, fileNode);
-			if(fileNode.propsToSet !== null) existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
+			if (fileNode.propsToSet !== null) existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
 		})
 
 		/* Remove any unaffected nodes before seeking files */
@@ -309,7 +308,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 		actualFilesMap.forEach(fileMap => this.app.fileManager.processFrontMatter(fileMap.file, (frontmatter) => {
 			/* have to directly mutate this object, a bit tedious */
 			Object.keys(fileMap.props).forEach(key => {
-				if(overwrite || !frontmatter.hasOwnProperty(key)) {
+				if (overwrite || !frontmatter.hasOwnProperty(key)) {
 					frontmatter[key] = fileMap.props[key];
 					return
 				}
@@ -317,7 +316,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 				//force array
 				if (!Array.isArray(frontmatter[key])) frontmatter[key] = [frontmatter[key]];
 
-				fileMap.props[key] = fileMap.props[key].filter((val:any)=>!frontmatter[key].some((og:any)=>og===val))
+				fileMap.props[key] = fileMap.props[key].filter((val: any) => !frontmatter[key].some((og: any) => og === val))
 				frontmatter[key] = [...frontmatter[key], ...fileMap.props[key]];
 			})
 
@@ -346,16 +345,16 @@ export default class SemanticCanvasPlugin extends Plugin {
 		let map: CanvasNodeMap = {
 			cards: (<CanvasTextData[]>data.nodes.filter((node) => node.type == 'text')),
 			files: (<CanvasFileData[]>data.nodes.filter((node) => node.type == 'file')),
-			links: (<CanvasLinkData[]>data.nodes.filter((node) => node.type == 'link')),
+			urls: (<CanvasLinkData[]>data.nodes.filter((node) => node.type == 'link')),
 			groups: (<CanvasGroupData[]>data.nodes.filter((node) => node.type == 'group')),
 		}
 
 		/* Find wholly-contained file-type nodes & add to group */
 		map.groups?.forEach((group) => {
-			let filesToAdd: CanvasFileData[] = [];
+			group.containedNodes = [] as CanvasNodeData[];
 			map.files?.forEach((file) => {
-				if (groupContainsFile(group, file)) {
-					filesToAdd.push(file);
+				if (groupContainsNode(group, file)) {
+					group.containedNodes.push(file);
 					if (file.hasOwnProperty('inGroups')) {
 						file.inGroups.push(group)
 					} else {
@@ -363,20 +362,31 @@ export default class SemanticCanvasPlugin extends Plugin {
 					}
 				}
 			})
-			group.containedFiles = filesToAdd;
+			map.cards?.forEach((cards) => {
+				if (groupContainsNode(group, cards)) {
+					group.containedNodes.push(cards);
+				}
+			})
+			map.urls?.forEach((urls) => {
+				if (groupContainsNode(group, urls)) {
+					group.containedNodes.push(urls);
+				}
+			})
+			//#TODO - probably need recursion for groups within groups
+			// group.containedNodes = recursivelySeekContainedNodes
 		})
 
 		/**
 		 * Returns true if the Group's outer bounds wholly contain the file's outer bounds.
 		 * Mimicks the behavior in Obsidian
 		 * @param group 
-		 * @param file 
+		 * @param node 
 		 */
-		function groupContainsFile(group: CanvasGroupData, file: CanvasFileData): boolean {
-			if (group.y > file.y) return false
-			if (group.y + group.height < file.y + file.height) return false
-			if (group.x > file.x) return false
-			if (group.x + group.width < file.x + file.width) return false
+		function groupContainsNode(group: CanvasGroupData, node: CanvasNodeData): boolean {
+			if (group.y > node.y) return false
+			if (group.y + group.height < node.y + node.height) return false
+			if (group.x > node.x) return false
+			if (group.x + group.width < node.x + node.width) return false
 			return true;
 		}
 
@@ -386,7 +396,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 	static async getCanvasEdges(file: TFile | null): Promise<CanvasEdgeData[] | undefined> {
 		let data = await SemanticCanvasPlugin.getCanvasData(file);
 		if (data === undefined) return undefined;
-		data.edges.forEach(edge=>{
+		data.edges.forEach(edge => {
 			edge.isBidirectional = (edge.fromEnd === 'arrow' || edge.toEnd === 'none')
 		})
 		return data.edges
@@ -405,13 +415,67 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		if (!map) return undefined;
 
-		map!.edges = edges as unknown as Array<CanvasEdgeData & {isBidirectional: boolean}>;
+		map!.edges = edges as unknown as Array<CanvasEdgeData & { isBidirectional: boolean }>;
+
+		edges?.forEach(edge=>{
+			const fromType = getTypeOfNodeById(edge.fromNode);
+			const toType = getTypeOfNodeById(edge.toNode);
+			console.log(edge.id + ' from ' + fromType + ' to ' + toType);
+			/* 
+				as of right now in this code base, links "from" groups are handled elsewhere.
+				It *may* be more elegant to handle them here... but recursion is breaking my brain.
+				So I'll do the simple thing and only handle the "to" case, which may be sufficient.
+			*/
+			if(toType==='group'){
+				/* remove matching edge */ // note: thought I'd have to do this, in reality I didn't?
+				// edges?.splice(edges.findIndex(node=>node.id === edge.id),1); 
+				/* replace with phantom edges */
+				let group = map?.groups?.find(g=>g.id === edge.toNode);
+				recursivelyMakeEdgesForGroupEdge(group!, edge);
+			}
+		})
 
 		return map
+
+		function getTypeOfNodeById(nodeId: string){
+			if(map?.cards?.some(card=>card.id === nodeId)) return 'card'
+			if(map?.files?.some(file=>file.id === nodeId)) return 'file'
+			if(map?.urls?.some(url=>url.id === nodeId)) return 'url'
+			if(map?.groups?.some(group=>group.id === nodeId)) return 'group'
+			throw new Error('No type found for id: ' + nodeId);
+		}
+
+		/**
+		 * Mutates the map to set its edges property to the passed-in edges AND
+		 * the "phantom" edges created by links-to-groups.
+		 * @param map 
+		 * @param edges 
+		 */
+		function recursivelyMakeEdgesForGroupEdge(group: CanvasGroupData, edge: CanvasEdgeData) {
+			group.containedNodes.forEach((node: CanvasNodeData) => {
+				if(node.type === 'group'){
+					recursivelyMakeEdgesForGroupEdge(node as CanvasGroupData, edge);
+					return
+				}
+				// console.log(edge);
+				
+				const newEdge: CanvasEdgeData = {
+					id: edge.id + '-phantom',
+					fromNode: edge.fromNode,
+					fromSide: 'right', //doesn't matter
+					toNode: node.id,
+					toSide: 'left', //doesn't matter
+					label: edge.hasOwnProperty('label') ? edge.label : group.label
+				}
+				edges?.push(newEdge);
+				// console.log(group.id + " contains: " + node.type);
+			})
+		}
 	}
 
-	onunload() {
 
+	onunload() {
+		//nothing to do
 	}
 
 	async loadSettings() {
@@ -422,22 +486,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 }
-
-// class SampleModal extends Modal {
-// 	constructor(app: App) {
-// 		super(app);
-// 	}
-
-// 	onOpen() {
-// 		const { contentEl } = this;
-// 		contentEl.setText('Your vault is: ' + app.vault.getName());
-// 	}
-
-// 	onClose() {
-// 		const { contentEl } = this;
-// 		contentEl.empty();
-// 	}
-// }
 
 class MySettingsTab extends PluginSettingTab {
 	plugin: SemanticCanvasPlugin;
@@ -539,3 +587,4 @@ class MySettingsTab extends PluginSettingTab {
 				}));
 	}
 }
+

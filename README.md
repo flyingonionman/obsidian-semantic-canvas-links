@@ -4,4 +4,5 @@ This is a plugin for Obsidian (https://obsidian.md) to use canvases to link note
 
 ## TODO:
 - [ ] Come up with a better name
-- [ ] Continue development
+- [ ] Ideate how this should all work
+- [ ] Figure out how to add to a context menu in Canvas

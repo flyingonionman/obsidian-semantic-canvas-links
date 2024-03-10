@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { App, Editor, MarkdownView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 import { CanvasEdgeData, CanvasFileData, CanvasGroupData, CanvasLinkData, CanvasNodeData, CanvasTextData } from 'canvas';
 
 // Remember to rename these classes and interfaces!
@@ -7,20 +7,32 @@ interface MyPluginSettings {
 	mySetting: string;
 }
 
-interface CanvasNodeMap{
-	cards?: Array< CanvasTextData >,
-	files?: Array< CanvasFileData >,
-	links?: Array< CanvasLinkData >,
-	groups?: Array< CanvasGroupData >
+interface CanvasNodeMap {
+	cards?: Array<CanvasTextData>,
+	files?: Array<CanvasFileData>,
+	links?: Array<CanvasLinkData>,
+	groups?: Array<CanvasGroupData>
 }
 
-interface CanvasMap extends CanvasNodeMap{
-	edges?: Array< CanvasEdgeData >
+interface CanvasMap extends CanvasNodeMap {
+	edges?: Array<CanvasEdgeData>
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
 	mySetting: 'default'
 }
+
+class CanvasBroker implements CanvasMap {
+	cards?: CanvasTextData[] | undefined;
+	files?: CanvasFileData[] | undefined;
+	links?: CanvasLinkData[] | undefined;
+	groups?: CanvasGroupData[] | undefined;
+	edges?: CanvasEdgeData[] | undefined;
+	constructor() {
+		new Notice('Loaded Canvas');
+	}
+}
+
 
 export default class CanvasPlugin extends Plugin {
 	settings: MyPluginSettings;
@@ -28,10 +40,24 @@ export default class CanvasPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
+		// this.registerEvent(
+		// 	this.app.workspace.on("editor-menu", (menu) => {
+		// 		console.log(menu)
+				// menu.addItem((item) => {
+				// 	item.setTitle('NOTE CONTEXT MENU CUSTOM ACTION')
+				// 		.setIcon('cloud')
+				// 		.onClick(() => {
+				// 			//@ts-ignore
+				// 			this.app.commands.executeCommandById(command.id);
+				// 		});
+				// });
+		// 	})
+		// );
+
 		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
+		const ribbonIconEl = this.addRibbonIcon('cloud', 'Canvas Plugin', (evt: MouseEvent) => {
 			// Called when the user clicks the icon.
-			new Notice('Hello world, from a Notice!');
+			this.pushCanvasToNoteProperties();
 		});
 		// Perform additional things with the ribbon
 		ribbonIconEl.addClass('my-plugin-ribbon-class');
@@ -86,30 +112,30 @@ export default class CanvasPlugin extends Plugin {
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', async (evt: MouseEvent) => {
-			// console.log('clicked, silently', evt);
+		// this.registerDomEvent(document, 'click', async (evt: MouseEvent) => {
+		// console.log('clicked, silently', evt);
 
-			/* Says the File's name!*/
-			let file = this.app.workspace.getActiveFile();
-			// console.log(file?.path);
-			// console.log(new Date(file!.stat.ctime).toDateString());
-			// console.log(`The file is ${file?.stat.size} bytes in size`);
+		/* Says the File's name!*/
+		// let file = this.app.workspace.getActiveFile();
+		// console.log(file?.path);
+		// console.log(new Date(file!.stat.ctime).toDateString());
+		// console.log(`The file is ${file?.stat.size} bytes in size`);
 
-			/* Appends '... you know?' to the end of a note */
-			// addYouKnow(file!);
-			// this.addProperty(file!);
+		/* Appends '... you know?' to the end of a note */
+		// addYouKnow(file!);
+		// this.addProperty(file!);
 
-			// let files = this.app.vault.getFileByPath('Note A.md');
-			// console.log(files);
+		// let files = this.app.vault.getFileByPath('Note A.md');
+		// console.log(files);
 
-			// await getNodes(file)
+		// await getNodes(file)
 
-			// await this.getFrontMatterObj(file);
+		// await this.getFrontMatterObj(file);
 
-			let data = await CanvasPlugin.getCanvasMap(file);
-			console.log(data);
-			
-		});
+		// let data = await CanvasPlugin.getCanvasMap(file);
+		// console.log(data);
+
+		// });
 
 		// a silly simple appending function
 		// function addYouKnow(file: TFile) {
@@ -120,6 +146,16 @@ export default class CanvasPlugin extends Plugin {
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		// this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+	}
+
+	async pushCanvasToNoteProperties() {
+
+		/* Says the File's name!*/
+		let file = this.app.workspace.getActiveFile();
+		let data = await CanvasPlugin.getCanvasMap(file);
+		console.log(data);
+
+		// new Notice('Hello world, from a Notice!');
 	}
 
 	async getFrontMatterObj(file: TFile | null) {
@@ -140,7 +176,7 @@ export default class CanvasPlugin extends Plugin {
 
 	}
 
-	static async getCanvasData(file: TFile | null): Promise<{nodes: Array<CanvasNodeData>, edges: Array<CanvasEdgeData>} | undefined> {
+	static async getCanvasData(file: TFile | null): Promise<{ nodes: Array<CanvasNodeData>, edges: Array<CanvasEdgeData> } | undefined> {
 		if (file === null || file.extension !== 'canvas') return;
 		let rawCanvasText = await file.vault.cachedRead(file);
 		let canvas = JSON.parse(rawCanvasText);
@@ -149,24 +185,24 @@ export default class CanvasPlugin extends Plugin {
 
 	static async getCanvasNodes(file: TFile | null): Promise<CanvasNodeMap | undefined> {
 		let data = await CanvasPlugin.getCanvasData(file);
-		if(data === undefined) return undefined;
+		if (data === undefined) return undefined;
 		let map: CanvasNodeMap = {
-			cards: (<CanvasTextData[]> data.nodes.filter((node)=> node.type == 'text')),
-			files: (<CanvasFileData[]> data.nodes.filter((node)=> node.type == 'file')),
-			links: (<CanvasLinkData[]> data.nodes.filter((node)=> node.type == 'link')),
-			groups: (<CanvasGroupData[]> data.nodes.filter((node)=> node.type == 'group')),
+			cards: (<CanvasTextData[]>data.nodes.filter((node) => node.type == 'text')),
+			files: (<CanvasFileData[]>data.nodes.filter((node) => node.type == 'file')),
+			links: (<CanvasLinkData[]>data.nodes.filter((node) => node.type == 'link')),
+			groups: (<CanvasGroupData[]>data.nodes.filter((node) => node.type == 'group')),
 		}
 		return map;
 	}
 
 	static async getCanvasEdges(file: TFile | null): Promise<CanvasEdgeData[] | undefined> {
 		let data = await CanvasPlugin.getCanvasData(file);
-		if(data === undefined) return undefined;
+		if (data === undefined) return undefined;
 		return data.edges
 	}
 
-	static async getCanvasMap(file: TFile | null): Promise<CanvasMap | undefined>{
-		if(!file) return undefined;
+	static async getCanvasMap(file: TFile | null): Promise<CanvasMap | undefined> {
+		if (!file) return undefined;
 
 		let map: CanvasMap | undefined;
 		let edges: CanvasEdgeData[] | undefined;
@@ -175,7 +211,9 @@ export default class CanvasPlugin extends Plugin {
 			map = await CanvasPlugin.getCanvasNodes(file),
 			edges = await CanvasPlugin.getCanvasEdges(file),
 		])
-		
+
+		if (!map) return undefined;
+
 		map!.edges = edges;
 
 		return map

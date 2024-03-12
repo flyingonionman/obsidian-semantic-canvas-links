@@ -32,11 +32,19 @@ type ConnectionProps = {
 	propVal?: string;
 }
 
+type RawCanvasObj = {
+	nodes: Array<CanvasNodeData>,
+	edges: Array<CanvasEdgeData>
+}
+
 const DEFAULT_SETTINGS: SemanticCanvasPluginSettings = {
+	// The default strings for unlabeled edges
 	cardDefault: 'cards',
 	fileDefault: 'files',
 	urlDefault: 'urls',
+	// The string for group containment
 	groupDefault: 'groups',
+	// For disabling whole types of interactions
 	useCards: true,
 	useUrls: true,
 	useFiles: true,
@@ -52,8 +60,8 @@ class FileNode {
 		this.propsToSet = {};
 		if (file.inGroups === undefined) file.inGroups = [];
 
-		let relevantIds = [file.id];
-		relevantIds = [file.id, ...file.inGroups.map((g: any) => g.id)];
+		let relevantIds = [file.id]; //the node ID itself...
+		relevantIds = [file.id, ...file.inGroups.map((g: any) => g.id)]; //...+ any groups that contain it
 
 		const relevantEdges = data.edges?.filter(edge => {
 			if (relevantIds.some(id => edge.fromNode == id)) return true
@@ -98,9 +106,9 @@ class FileNode {
 			return newEdge
 		})!
 
-		/* ALL PROPERTIES MUST BE ARRAYS OF STRINGS*/
+		/* ALL PROPERTIES ARE ARRAYS OF STRINGS */
 
-		/* this contained in group */
+		/* this -> contained in group */
 		if (file.inGroups.length > 0 && settings.useGroups) {
 			this.propsToSet[settings.groupDefault] = file.inGroups.map((group: CanvasGroupData) => group.label);
 		}
@@ -155,20 +163,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		// this.registerEvent(
-		// 	this.app.workspace.on("editor-menu", (menu) => {
-		// 		console.log(menu)
-		// menu.addItem((item) => {
-		// 	item.setTitle('NOTE CONTEXT MENU CUSTOM ACTION')
-		// 		.setIcon('cloud')
-		// 		.onClick(() => {
-		// 			//@ts-ignore
-		// 			this.app.commands.executeCommandById(command.id);
-		// 		});
-		// });
-		// 	})
-		// );
-
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon('right-arrow-with-tail', 'Push Canvas to Note Properties', (evt: MouseEvent) => {
 			// Called when the user clicks the icon.
@@ -195,7 +189,23 @@ export default class SemanticCanvasPlugin extends Plugin {
 			}
 		});
 
-		/* ### CODE I'M KEEPING FOR FUTURE SYNTAX REFERENCE ### */
+		this.addSettingTab(new SemanticCanvasSettingsTab(this.app, this));
+
+		/* ### CODE I'M KEEPING FOR FUTURE SYNTAX REFERENCE ### 
+
+		// this.registerEvent(
+		// 	this.app.workspace.on("editor-menu", (menu) => {
+		// 		console.log(menu)
+		// menu.addItem((item) => {
+		// 	item.setTitle('NOTE CONTEXT MENU CUSTOM ACTION')
+		// 		.setIcon('cloud')
+		// 		.onClick(() => {
+		// 			//@ts-ignore
+		// 			this.app.commands.executeCommandById(command.id);
+		// 		});
+		// });
+		// 	})
+		// );
 
 		// This adds an editor command that can perform some operation on the current editor instance
 		// this.addCommand({
@@ -228,9 +238,8 @@ export default class SemanticCanvasPlugin extends Plugin {
 		// 		}
 		// 	}
 		// });
+		*/
 
-		/* This adds a settings tab so the user can configure various aspects of the plugin */
-		this.addSettingTab(new MySettingsTab(this.app, this));
 	}
 
 	async pushCanvasToNoteProperties(overwrite: boolean) {
@@ -253,12 +262,12 @@ export default class SemanticCanvasPlugin extends Plugin {
 		let dedupedFileNodes: FileNode[] = [];
 		fileNodes?.forEach(fileNode => {
 			let existing = dedupedFileNodes?.find(ogNodeList => ogNodeList.filePath === fileNode.filePath);
-			
+
 			if (existing === undefined) {
 				dedupedFileNodes.push(fileNode);
 				return
 			}
-			
+
 			if (fileNode.propsToSet !== null) existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
 		})
 
@@ -303,9 +312,9 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		function mergeProps(a: any, b: any) {
 			Object.keys(b).forEach(key => {
-				if (a.hasOwnProperty(key)){
+				if (a.hasOwnProperty(key)) {
 					a[key] = [...a[key], ...b[key]];
-				}else{
+				} else {
 					a[key] = b[key];
 				}
 			})
@@ -313,15 +322,14 @@ export default class SemanticCanvasPlugin extends Plugin {
 		}
 	}
 
-	static async getCanvasData(file: TFile | null): Promise<{ nodes: Array<CanvasNodeData>, edges: Array<CanvasEdgeData> } | undefined> {
+	static async getCanvasData(file: TFile | null): Promise<RawCanvasObj | undefined> {
 		if (file === null || file.extension !== 'canvas') return;
 		let rawCanvasText = await file.vault.cachedRead(file);
 		let canvas = JSON.parse(rawCanvasText);
-		return canvas
+		return canvas!
 	}
 
-	static async getCanvasNodes(file: TFile | null): Promise<CanvasNodeMap | undefined> {
-		let data = await SemanticCanvasPlugin.getCanvasData(file);
+	static getCanvasNodes(data: RawCanvasObj): CanvasMap | undefined {
 		if (data === undefined) return undefined;
 		let map: CanvasNodeMap = {
 			cards: (<CanvasTextData[]>data.nodes.filter((node) => node.type == 'text')),
@@ -372,8 +380,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 		return map;
 	}
 
-	static async getCanvasEdges(file: TFile | null): Promise<CanvasEdgeData[] | undefined> {
-		let data = await SemanticCanvasPlugin.getCanvasData(file);
+	static getCanvasEdges(data: RawCanvasObj): CanvasEdgeData[] | undefined {
 		if (data === undefined) return undefined;
 		data.edges.forEach(edge => {
 			edge.isBidirectional = (edge.fromEnd === 'arrow' || edge.toEnd === 'none')
@@ -384,43 +391,33 @@ export default class SemanticCanvasPlugin extends Plugin {
 	static async getCanvasMap(file: TFile | null): Promise<CanvasMap | undefined> {
 		if (!file) return undefined;
 
-		let map: CanvasMap | undefined;
-		let edges: CanvasEdgeData[] | undefined;
+		const canvasData = await SemanticCanvasPlugin.getCanvasData(file);
+		if (!canvasData) return undefined;
 
-		await Promise.all([
-			map = await SemanticCanvasPlugin.getCanvasNodes(file),
-			edges = await SemanticCanvasPlugin.getCanvasEdges(file),
-		])
-
+		let map = SemanticCanvasPlugin.getCanvasNodes(canvasData)
 		if (!map) return undefined;
 
+		let edges = SemanticCanvasPlugin.getCanvasEdges(canvasData)
 		map!.edges = edges as unknown as Array<CanvasEdgeData & { isBidirectional: boolean }>;
 
-		edges?.forEach(edge=>{
-			const fromType = getTypeOfNodeById(edge.fromNode);
+		edges?.forEach(edge => {
 			const toType = getTypeOfNodeById(edge.toNode);
-			// console.log(edge.id + ' from ' + fromType + ' to ' + toType);
-			/* 
-				as of right now in this code base, links "from" groups are handled elsewhere.
-				It *may* be more elegant to handle them here... but recursion is breaking my brain.
-				So I'll do the simple thing and only handle the "to" case, which may be sufficient.
-			*/
-			if(toType==='group'){
-				/* remove matching edge */ // note: thought I'd have to do this, in reality I didn't?
-				// edges?.splice(edges.findIndex(node=>node.id === edge.id),1); 
-				/* replace with phantom edges */
-				let group = map?.groups?.find(g=>g.id === edge.toNode);
-				recursivelyMakeEdgesForGroupEdge(group!, edge);
+
+			if (toType === 'group') {
+				/* create phantom edges to group contents */
+				let group = map?.groups?.find(g => g.id === edge.toNode);
+				if (!group) throw new Error('Unmatched group. ID: ' + edge.toNode);
+				makePhantomPropagatedEdgesToGroupContents(group!, edge);
 			}
 		})
 
 		return map
 
-		function getTypeOfNodeById(nodeId: string){
-			if(map?.cards?.some(card=>card.id === nodeId)) return 'card'
-			if(map?.files?.some(file=>file.id === nodeId)) return 'file'
-			if(map?.urls?.some(url=>url.id === nodeId)) return 'url'
-			if(map?.groups?.some(group=>group.id === nodeId)) return 'group'
+		function getTypeOfNodeById(nodeId: string) {
+			if (map?.cards?.some(card => card.id === nodeId)) return 'card'
+			if (map?.files?.some(file => file.id === nodeId)) return 'file'
+			if (map?.urls?.some(url => url.id === nodeId)) return 'url'
+			if (map?.groups?.some(group => group.id === nodeId)) return 'group'
 			throw new Error('No type found for id: ' + nodeId);
 		}
 
@@ -430,13 +427,10 @@ export default class SemanticCanvasPlugin extends Plugin {
 		 * @param map 
 		 * @param edges 
 		 */
-		function recursivelyMakeEdgesForGroupEdge(group: CanvasGroupData, edge: CanvasEdgeData) {
+		function makePhantomPropagatedEdgesToGroupContents(group: CanvasGroupData, edge: CanvasEdgeData) {
 			group.containedNodes.forEach((node: CanvasNodeData) => {
-				if(node.type === 'group'){
-					// recursivelyMakeEdgesForGroupEdge(node as CanvasGroupData, edge);
-					return
-				}
-				
+				if (node.type === 'group') return //if a group contains another group, that group node can be ignored
+
 				const newEdge: CanvasEdgeData = {
 					id: edge.id + '-phantom',
 					fromNode: edge.fromNode,
@@ -445,11 +439,11 @@ export default class SemanticCanvasPlugin extends Plugin {
 					toSide: 'left', //doesn't matter
 					label: edge.hasOwnProperty('label') ? edge.label : group.label
 				}
+
 				edges?.push(newEdge);
 			})
 		}
 	}
-
 
 	onunload() {
 		//nothing to do
@@ -464,7 +458,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 	}
 }
 
-class MySettingsTab extends PluginSettingTab {
+class SemanticCanvasSettingsTab extends PluginSettingTab {
 	plugin: SemanticCanvasPlugin;
 
 	constructor(app: App, plugin: SemanticCanvasPlugin) {
@@ -492,7 +486,7 @@ class MySettingsTab extends PluginSettingTab {
 			.setName('Default Property Label for connections to Cards')
 			.setDesc('Leave blank to only create properties for labeled edges. Default: cards')
 			.addText(text => text
-				.setPlaceholder('cards')
+				.setPlaceholder('Default cards key...')
 				.setValue(this.plugin.settings.cardDefault)
 				.onChange(async (value) => {
 					this.plugin.settings.cardDefault = value;
@@ -513,7 +507,7 @@ class MySettingsTab extends PluginSettingTab {
 			.setName('Default Property Label for connections to Urls')
 			.setDesc('Leave blank to only create properties for labeled edges. Default: urls')
 			.addText(text => text
-				.setPlaceholder('urls')
+				.setPlaceholder('Default urls key...')
 				.setValue(this.plugin.settings.urlDefault)
 				.onChange(async (value) => {
 					this.plugin.settings.urlDefault = value;
@@ -534,7 +528,7 @@ class MySettingsTab extends PluginSettingTab {
 			.setName('Default Property Label for connections to Files')
 			.setDesc('Leave blank to only create properties for labeled edges. Default: files')
 			.addText(text => text
-				.setPlaceholder('files')
+				.setPlaceholder('Default files key...')
 				.setValue(this.plugin.settings.fileDefault)
 				.onChange(async (value) => {
 					this.plugin.settings.fileDefault = value;
@@ -556,7 +550,7 @@ class MySettingsTab extends PluginSettingTab {
 			.setName('Default Property Label for containment in Groups')
 			.setDesc('Default: groups')
 			.addText(text => text
-				.setPlaceholder('groups')
+				.setPlaceholder('Default groups key...')
 				.setValue(this.plugin.settings.groupDefault)
 				.onChange(async (value) => {
 					this.plugin.settings.groupDefault = value;

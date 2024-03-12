@@ -7,10 +7,10 @@ Set properties for all Markdown files included in your canvas based on their gro
 ## Example Screenshots
 
 One command to turn this:
-![[assets/before.png]]
+![Before image](assets/before.png)
 
 Into this:
-![[assets/after.png]]
+![After image](assets/after.png)
 
 ## Use Cases
 
@@ -25,12 +25,12 @@ After installation, open a canvas then use command palette to run either:
 - `Semantic Canvas: Overwrite Note Properties based on Canvas`
 
 ### Behaviors
-> 📖 Node Types
+> 📖 Node Types  
 > Nodes on a canvas are typed as one of `card`, `url`, `file`, or `group`. 
 
 Semantic Canvas modifies properties of **Markdown files** based on how they're connected to nodes (i.e. `files`, `groups`, `cards`, `urls`) in the active Canvas.
 
-![[assets/behaviors.png]]
+![Behaviors image](assets/behaviors.png)
 
 - Each Node Type behavior can be toggled off.
 - If an edge is labeled, the property set on the `file` will use that label as the property key.

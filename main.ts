@@ -55,8 +55,6 @@ class FileNode {
 		let relevantIds = [file.id];
 		relevantIds = [file.id, ...file.inGroups.map((g: any) => g.id)];
 
-		//#TODO - swap data.edges here with something that switches group IDs with a list of contained items
-
 		const relevantEdges = data.edges?.filter(edge => {
 			if (relevantIds.some(id => edge.fromNode == id)) return true
 			/* In case link is bi-directional */
@@ -100,17 +98,12 @@ class FileNode {
 			return newEdge
 		})!
 
-		// console.log(relevantEdges);
-
 		/* ALL PROPERTIES MUST BE ARRAYS OF STRINGS*/
 
 		/* this contained in group */
 		if (file.inGroups.length > 0 && settings.useGroups) {
 			this.propsToSet[settings.groupDefault] = file.inGroups.map((group: CanvasGroupData) => group.label);
 		}
-
-		/* this -> group */
-
 
 		/* this -> card */
 		if (settings.useCards) {
@@ -141,11 +134,6 @@ class FileNode {
 					return
 				}
 				this.propsToSet[edge.propLbl!].push(edge.propVal);
-
-				/* Handle bi-directionality */
-				// if(edge.isBidirectional){
-
-				// }
 			})
 		}
 
@@ -187,13 +175,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 			this.pushCanvasToNoteProperties(true);
 		});
 
-		// Perform additional things with the ribbon
-		// ribbonIconEl.addClass('my-plugin-ribbon-class'); // never figured out what this line did, seemingly nothing
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		// const statusBarItemEl = this.addStatusBarItem();
-		// statusBarItemEl.setText('Status Bar Text');
-
 		/* This adds a simple command that can be triggered anywhere */
 		this.addCommand({
 			id: 'set-canvas-to-note-properties',
@@ -207,12 +188,14 @@ export default class SemanticCanvasPlugin extends Plugin {
 		/* This adds a simple command that can be triggered anywhere */
 		this.addCommand({
 			id: 'append-canvas-to-note-properties',
-			name: 'Append Nope Properties based on Canvas',
+			name: 'Append Note Properties based on Canvas',
 			callback: () => {
 				// new SampleModal(this.app).open();
 				this.pushCanvasToNoteProperties(false);
 			}
 		});
+
+		/* ### CODE I'M KEEPING FOR FUTURE SYNTAX REFERENCE ### */
 
 		// This adds an editor command that can perform some operation on the current editor instance
 		// this.addCommand({
@@ -259,8 +242,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		let data = await SemanticCanvasPlugin.getCanvasMap(file);
 
-		// console.log(data);
-
 		if (!data) {
 			new Notice('Aborted: No Canvas data found');
 			return;
@@ -268,23 +249,21 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		let fileNodes = data?.files?.map(file => new FileNode(file, data!, this.settings));
 
-		// console.log(fileNodes);
-
 		/* De-dupe - if same file was on a canvas multiple times */
 		let dedupedFileNodes: FileNode[] = [];
 		fileNodes?.forEach(fileNode => {
 			let existing = dedupedFileNodes?.find(ogNodeList => ogNodeList.filePath === fileNode.filePath);
+			
 			if (existing === undefined) {
 				dedupedFileNodes.push(fileNode);
 				return
 			}
+			
 			if (fileNode.propsToSet !== null) existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
 		})
 
 		/* Remove any unaffected nodes before seeking files */
 		dedupedFileNodes = dedupedFileNodes.filter(fileNode => fileNode.propsToSet && Object.keys(fileNode.propsToSet).length > 0);
-
-		// console.log(dedupedFileNodes);
 
 		let actualFilesMap: Array<any> = dedupedFileNodes.map(fileNode => {
 			return {
@@ -295,8 +274,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		/* Remove any non-markdown files before setting properties */
 		actualFilesMap = actualFilesMap.filter(fileMap => fileMap.file?.extension === 'md');
-
-		// console.log(actualFilesMap);
 
 		let propertyAddCount = 0;
 		actualFilesMap.forEach(fileMap => {
@@ -326,7 +303,11 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		function mergeProps(a: any, b: any) {
 			Object.keys(b).forEach(key => {
-				if (a.hasOwnProperty(key)) a[key] = [...a[key], ...b[key]];
+				if (a.hasOwnProperty(key)){
+					a[key] = [...a[key], ...b[key]];
+				}else{
+					a[key] = b[key];
+				}
 			})
 			return a;
 		}
@@ -372,8 +353,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 					group.containedNodes.push(urls);
 				}
 			})
-			//#TODO - probably need recursion for groups within groups
-			// group.containedNodes = recursivelySeekContainedNodes
 		})
 
 		/**
@@ -420,7 +399,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 		edges?.forEach(edge=>{
 			const fromType = getTypeOfNodeById(edge.fromNode);
 			const toType = getTypeOfNodeById(edge.toNode);
-			console.log(edge.id + ' from ' + fromType + ' to ' + toType);
+			// console.log(edge.id + ' from ' + fromType + ' to ' + toType);
 			/* 
 				as of right now in this code base, links "from" groups are handled elsewhere.
 				It *may* be more elegant to handle them here... but recursion is breaking my brain.
@@ -454,10 +433,9 @@ export default class SemanticCanvasPlugin extends Plugin {
 		function recursivelyMakeEdgesForGroupEdge(group: CanvasGroupData, edge: CanvasEdgeData) {
 			group.containedNodes.forEach((node: CanvasNodeData) => {
 				if(node.type === 'group'){
-					recursivelyMakeEdgesForGroupEdge(node as CanvasGroupData, edge);
+					// recursivelyMakeEdgesForGroupEdge(node as CanvasGroupData, edge);
 					return
 				}
-				// console.log(edge);
 				
 				const newEdge: CanvasEdgeData = {
 					id: edge.id + '-phantom',
@@ -468,7 +446,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 					label: edge.hasOwnProperty('label') ? edge.label : group.label
 				}
 				edges?.push(newEdge);
-				// console.log(group.id + " contains: " + node.type);
 			})
 		}
 	}

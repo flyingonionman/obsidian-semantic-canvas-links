@@ -1,7 +1,11 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
-import { CanvasEdgeData, CanvasFileData, CanvasGroupData, CanvasLinkData, CanvasNodeData, CanvasTextData } from 'canvas';
+import { App, MetadataCache, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, getFrontMatterInfo } from 'obsidian';
+import { CanvasData, CanvasEdgeData, CanvasFileData, CanvasGroupData, CanvasLinkData, CanvasNodeData, CanvasTextData } from 'canvas';
 
 interface SemanticCanvasPluginSettings {
+	/* Note ➡️ canvas */
+	newFileLocation: Location;
+	customFileLocation: string;
+	/* Canvas ➡️ note */
 	cardDefault: string;
 	fileDefault: string;
 	urlDefault: string;
@@ -10,6 +14,12 @@ interface SemanticCanvasPluginSettings {
 	useUrls: boolean;
 	useFiles: boolean;
 	useGroups: boolean;
+}
+
+export enum Location {
+	VaultFolder,
+	SameFolder,
+	SpecifiedFolder,
 }
 
 interface CanvasNodeMap {
@@ -38,6 +48,8 @@ type RawCanvasObj = {
 }
 
 const DEFAULT_SETTINGS: SemanticCanvasPluginSettings = {
+	newFileLocation: Location.VaultFolder,
+	customFileLocation: '',
 	// The default strings for unlabeled edges
 	cardDefault: 'cards',
 	fileDefault: 'files',
@@ -51,13 +63,26 @@ const DEFAULT_SETTINGS: SemanticCanvasPluginSettings = {
 	useGroups: true
 }
 
+/**
+ * Represents an instance of a node on the canvas that represents a file in the vault
+ */
 class FileNode {
 	filePath: string;
 	propsToSet: any;
+	app: App;
 
-	constructor(file: CanvasFileData, data: CanvasMap, settings: SemanticCanvasPluginSettings) {
+	/**
+	 * A Node on the Canvas that represents a file in the vault
+	 * @param file 
+	 * @param data 
+	 * @param settings 
+	 * @returns 
+	 */
+	constructor(file: CanvasFileData, data: CanvasMap, settings: SemanticCanvasPluginSettings, appRef: App) {
 		this.filePath = file.file;
 		this.propsToSet = {};
+		this.app = appRef; //for access to metadatacache
+
 		if (file.inGroups === undefined) file.inGroups = [];
 
 		let relevantIds = [file.id]; //the node ID itself...
@@ -101,10 +126,10 @@ class FileNode {
 			if (newEdge.otherSide === undefined) throw new Error('Could not find other side of edge');
 			if (newEdge.type === 'card') newEdge.propVal = newEdge.otherSide.text;
 			if (newEdge.type === 'url') newEdge.propVal = newEdge.otherSide.url;
-			if (newEdge.type === 'file') newEdge.propVal = convertToWikilink(newEdge.otherSide.file);
+			if (newEdge.type === 'file') newEdge.propVal = convertToWikilink(newEdge.otherSide as CanvasFileData, this)
 			if (edge.label !== undefined) newEdge.propLbl = edge.label;
 			return newEdge
-		})!
+		}).filter(newEdge => newEdge.propLbl !== undefined && newEdge.propLbl !== '')!;
 
 		/* ALL PROPERTIES ARE ARRAYS OF STRINGS */
 
@@ -145,14 +170,12 @@ class FileNode {
 			})
 		}
 
-		function convertToWikilink(filepath: string): string {
-			let split = filepath.split('.');
-			if (split[split.length - 1] === 'md') {
-				let sansExtension = split.slice(0, -1);
-				split = sansExtension;
-			}
-			let noteRefString = split.join('.');
-			return "[[" + noteRefString + "]]";
+		function convertToWikilink(otherSide: CanvasFileData, that: FileNode): string {
+			const otherFile = that.app.metadataCache.getFirstLinkpathDest(otherSide.file, that.filePath) as TFile;
+			let linkTextContent = that.app.metadataCache.fileToLinktext(otherFile,that.filePath);
+			/* see if Subpaths were used */
+			if (otherSide.hasOwnProperty("subpath")) linkTextContent = linkTextContent + otherSide.subpath;
+			return "[[" + linkTextContent + "]]";
 		}
 	}
 }
@@ -163,85 +186,278 @@ export default class SemanticCanvasPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('right-arrow-with-tail', 'Push Canvas to Note Properties', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			this.pushCanvasToNoteProperties(true);
-		});
-
-		/* This adds a simple command that can be triggered anywhere */
+		/* This command will replace the values of an already-existing property */
 		this.addCommand({
 			id: 'set-canvas-to-note-properties',
-			name: 'Overwrite Note Properties based on Canvas',
+			name: 'Overwrite note properties based on canvas',
 			callback: () => {
-				// new SampleModal(this.app).open();
 				this.pushCanvasToNoteProperties(true);
 			}
 		});
 
-		/* This adds a simple command that can be triggered anywhere */
+		/* This command will add new values onto the end of an already-existing property */
 		this.addCommand({
 			id: 'append-canvas-to-note-properties',
-			name: 'Append Note Properties based on Canvas',
+			name: 'Append note properties based on canvas',
 			callback: () => {
-				// new SampleModal(this.app).open();
 				this.pushCanvasToNoteProperties(false);
+			}
+		});
+
+		/* This command will add new values onto the end of an already-existing property */
+		this.addCommand({
+			id: 'create-canvas-from-note',
+			name: 'Create canvas based on note',
+			callback: () => {
+				this.createCanvasFromNote();
 			}
 		});
 
 		this.addSettingTab(new SemanticCanvasSettingsTab(this.app, this));
 
-		/* ### CODE I'M KEEPING FOR FUTURE SYNTAX REFERENCE ### 
+		/* File Menu */
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file) => {
+				if (file instanceof TFolder || file === undefined) return;
+				/* If Markdown offer to create canvas */
+				if ((<TFile>file).extension === 'md') {
+					menu.addItem((item) => {
+						item.setTitle('Create canvas based on note')
+							.setIcon('cloud')
+							.onClick(() => {
+								this.createCanvasFromNote();
+							});
+					});
+				}
 
-		// this.registerEvent(
-		// 	this.app.workspace.on("editor-menu", (menu) => {
-		// 		console.log(menu)
-		// menu.addItem((item) => {
-		// 	item.setTitle('NOTE CONTEXT MENU CUSTOM ACTION')
-		// 		.setIcon('cloud')
-		// 		.onClick(() => {
-		// 			//@ts-ignore
-		// 			this.app.commands.executeCommandById(command.id);
-		// 		});
-		// });
-		// 	})
-		// );
-
-		// This adds an editor command that can perform some operation on the current editor instance
-		// this.addCommand({
-		// 	id: 'sample-editor-command',
-		// 	name: 'Sample editor command',
-		// 	editorCallback: (editor: Editor, view: MarkdownView) => {
-		// 		console.log(editor.getSelection());
-		// 		editor.replaceSelection('Sample Editor Command');
-		// 	}
-		// });
-
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		// this.addCommand({
-		// 	id: 'open-sample-modal-complex',
-		// 	name: 'Open sample modal (complex)',
-		// 	checkCallback: (checking: boolean) => {
-		// 		// Conditions to check
-		// 		const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-		// 		if (markdownView) {
-		// 			console.log(markdownView);
-
-		// 			// If checking is true, we're simply "checking" if the command can be run.
-		// 			// If checking is false, then we want to actually perform the operation.
-		// 			if (!checking) {
-		// 				new SampleModal(this.app).open();
-		// 			}
-
-		// 			// This command will only show up in Command Palette when the check function returns true
-		// 			return true;
-		// 		}
-		// 	}
-		// });
-		*/
-
+				/* If Canvas offer to update notes */
+				if ((<TFile>file).extension === 'canvas') {
+					menu.addItem((item) => {
+						item.setTitle('Append note properties based on canvas')
+							.setIcon('cloud')
+							.onClick(() => {
+								this.pushCanvasToNoteProperties(false);
+							});
+					});
+					menu.addItem((item) => {
+						item.setTitle('Overwrite note properties based on canvas')
+							.setIcon('cloud')
+							.onClick(() => {
+								this.pushCanvasToNoteProperties(true);
+							});
+					});
+				}
+			})
+		);
 	}
 
+	/**
+	 * The main function for using a note to create a new canvas.
+	 */
+	async createCanvasFromNote() {
+		let file = this.app.workspace.getActiveFile();
+		if (!file || file?.extension !== 'md') {
+			new Notice('Aborted: Active file is not Markdown file');
+			return;
+		}
+
+		const name = file.basename;
+		new Notice('Creating canvas for ' + name);
+
+		const allProperties = this.app.metadataCache.getCache(file.path)?.frontmatter;
+		let listTypeProps: Array<{ [index: string]: Array<string> }> = [];
+
+		if (allProperties !== undefined) {
+			Object.keys(allProperties).forEach((key) => {
+				if (Array.isArray(allProperties[key])) listTypeProps.push({ [key]: allProperties[key] });
+			})
+		}
+
+		const that = this;
+		const canvasContents = buildCanvasContents(file, listTypeProps);
+
+		const savePath = createSavePathBasedOnSettings(file, that);
+		const createdCanvas = await this.app.vault.create(savePath, JSON.stringify(canvasContents));
+		this.app.workspace.getLeaf().openFile(createdCanvas);
+
+		function buildCanvasContents(file: TFile, propsMap: Array<{ [index: string]: Array<string> }>): CanvasData {
+			const thisFileNodeData: CanvasFileData = {
+				color: "1",
+				x: 0,
+				y: 0,
+				id: '0',
+				width: 400,
+				height: 400,
+				type: 'file',
+				file: file.path
+			}
+
+			let canvasContents: CanvasData = {
+				nodes: [thisFileNodeData],
+				edges: []
+			}
+
+			if (propsMap.length === 0) return canvasContents;
+
+			const firstColumnPosition = 600;
+			let curY = 0;
+			let nodeCount = 1;
+			let edgeCount = 0;
+
+			/* Iterate through the props & mutate the canvasContents for each */
+			propsMap.forEach(propObj => {
+				const key = Object.keys(propObj)[0];
+				const valArr = propObj[key]; //will be array
+				if (!Array.isArray(valArr)) throw new Error("A non-array was passed into buildCanvasContents");
+				addEdge(key);
+				if (isGroup(valArr)) return addGroup(key, valArr);
+				/* If it's not a group, the array is of size 1 */
+				const val = valArr[0];
+				return addNode(val, firstColumnPosition);
+			})
+
+			thisFileNodeData.y = curY / 2 - thisFileNodeData.height / 2;
+
+			return canvasContents
+
+			/**
+			 * Mutates canvasContents
+			 * @param label 
+			 */
+			function addEdge(label: string): void {
+				edgeCount = edgeCount + 1;
+				canvasContents.edges.push({
+					id: edgeCount.toString(),
+					fromNode: '0',
+					fromSide: 'right',
+					toNode: (nodeCount + 1).toString(),
+					toSide: 'left',
+					label: label
+				})
+			}
+
+			/**
+			 * Mutates canvasContents
+			 * @param val card text, url, file
+			 * @param xPos also used as a flag for "is this in a group?"
+			 */
+			function addNode(val: string, xPos: number) {
+				nodeCount = nodeCount + 1;
+				const newNode: any = {
+					id: nodeCount.toString(),
+					x: xPos.toString(),
+					y: curY.toString()
+				}
+				if (isFile(val)) {
+					newNode.type = 'file';
+					newNode.file = val.substring(2, val.length - 2);
+					newNode.width = 400;
+					newNode.height = 400;
+					if (that.app.vault.getAbstractFileByPath(newNode.file) === null) {
+						//no such file exists, search for best match
+						const splitToBaseAndAlias = newNode.file.split('|');
+						const base = splitToBaseAndAlias[0];
+						const splitToPathAndSubpath = base.split('#');
+						const path = splitToPathAndSubpath[0];
+						if(splitToPathAndSubpath.length>1) newNode.subpath = "#" + splitToPathAndSubpath[1];
+						const foundFile = that.app.metadataCache.getFirstLinkpathDest(path, file.path);
+						if (foundFile !== null) newNode.file = foundFile.path;
+						//else just leaving the link broken
+					}
+				} else if (isURL(val)) {
+					newNode.type = 'link';
+					newNode.url = val;
+					newNode.width = 400;
+					newNode.height = 400;
+				} else {
+					newNode.type = 'text';
+					newNode.text = val;
+					newNode.width = val.length > 15 ? 400 : 200;
+					newNode.height = val.length > 15 ? 200 : 100;
+				}
+
+				/* adjust curY based on height if this isn't being added in a group*/
+				if (xPos === firstColumnPosition) {
+					curY = curY + parseInt(newNode.height) + 50;
+				}
+
+				canvasContents.nodes.push(newNode as CanvasTextData);
+				// Returning for use in "addGroup"
+				return newNode
+			}
+
+			function addGroup(key: string, valArr: Array<string>) {
+				nodeCount = nodeCount + 1;
+				const newGroup: CanvasGroupData = {
+					type: 'group',
+					id: nodeCount.toString(),
+					x: firstColumnPosition,
+					y: curY,
+					label: key,
+					width: 50,
+					height: 50
+				}
+				let xPos = firstColumnPosition + 50;
+				curY = curY + 50;
+				valArr.forEach(val => {
+					let newNode = addNode(val, xPos);
+					xPos = xPos + newNode.width + 50;
+					newGroup.width = newGroup.width + newNode.width + 50;
+					if (newNode.height + 100 > newGroup.height) newGroup.height = newNode.height + 100
+				})
+				curY = curY + newGroup.height;
+				canvasContents.nodes.push(newGroup);
+			}
+
+			function isGroup(val: Array<string>) {
+				return val.length > 1;
+			}
+
+			function isFile(val: string): boolean {
+				if (val.substring(0, 2) !== '[[') return false;
+				if (val.substring(val.length - 2) !== ']]') return false;
+				if (val.split('[[').length !== 2) return false;
+				return true
+			}
+
+			function isURL(val: string): boolean {
+				if (val.toUpperCase().substring(0, 4) !== 'HTTP') return false
+				if (!val.contains('//')) return false
+				if (val.length < 8) return false
+				return true
+			}
+		}
+
+		function createSavePathBasedOnSettings(file: TFile, that: SemanticCanvasPlugin): string {
+			let location = '';
+			switch (that.settings.newFileLocation) {
+				case Location.SameFolder:
+					location = file.parent!.path;
+					break;
+				case Location.SpecifiedFolder:
+					const fileLocationExists = that.app.vault.getAbstractFileByPath(that.settings.customFileLocation) !== null;
+					if (fileLocationExists) {
+						location = that.settings.customFileLocation;
+					} else {
+						new Notice(
+							`folder ${that.settings.customFileLocation} does not exist, creating in root folder`
+						);
+					}
+			}
+			let canvasPath = name + '.canvas';
+			if (location !== '') canvasPath = location + "/" + canvasPath;
+			/* If the file already exists, keep appending "(new)" until it's unique */
+			while (that.app.vault.getAbstractFileByPath(canvasPath) !== null) {
+				canvasPath = canvasPath.substring(0, canvasPath.length - 7) + " (new).canvas"
+			}
+			return canvasPath
+		}
+	}
+
+	/**
+	 * The main function for using an existing canvas to update note properties.
+	 * @param overwrite `true` will overwrite existing values for keys
+	 */
 	async pushCanvasToNoteProperties(overwrite: boolean) {
 		let file = this.app.workspace.getActiveFile();
 		if (!file || file?.extension !== 'canvas') {
@@ -256,11 +472,13 @@ export default class SemanticCanvasPlugin extends Plugin {
 			return;
 		}
 
-		let fileNodes = data?.files?.map(file => new FileNode(file, data!, this.settings));
+		let fileNodes = data?.files?.map(file => new FileNode(file, data!, this.settings, this.app));
 
 		/* De-dupe - if same file was on a canvas multiple times */
 		let dedupedFileNodes: FileNode[] = [];
 		fileNodes?.forEach(fileNode => {
+			if (fileNode.propsToSet === null) return
+
 			let existing = dedupedFileNodes?.find(ogNodeList => ogNodeList.filePath === fileNode.filePath);
 
 			if (existing === undefined) {
@@ -268,7 +486,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 				return
 			}
 
-			if (fileNode.propsToSet !== null) existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
+			existing.propsToSet = mergeProps(existing.propsToSet, fileNode.propsToSet);
 		})
 
 		/* Remove any unaffected nodes before seeking files */
@@ -301,14 +519,18 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 				//force array
 				if (!Array.isArray(frontmatter[key])) frontmatter[key] = [frontmatter[key]];
-
+				/* Don't add duplicate values to existing props */
 				fileMap.props[key] = fileMap.props[key].filter((val: any) => !frontmatter[key].some((og: any) => og === val))
 				frontmatter[key] = [...frontmatter[key], ...fileMap.props[key]];
 			})
 
 		}));
 
-		new Notice(`Successfully set ${propertyAddCount} prop(s) in ${modifiedFileCount} file(s)`)
+		if (modifiedFileCount > 0) {
+			new Notice(`Successfully set ${propertyAddCount} prop(s) in ${modifiedFileCount} file(s)`)
+		} else {
+			new Notice(`No notes connections found on canvas.`)
+		}
 
 		function mergeProps(a: any, b: any) {
 			Object.keys(b).forEach(key => {
@@ -472,8 +694,49 @@ class SemanticCanvasSettingsTab extends PluginSettingTab {
 		/* Clear existing content, if any */
 		containerEl.empty();
 
+		containerEl.createEl('h1', { text: 'Note → create canvas' });
 		new Setting(containerEl)
-			.setName('Set note properties for connections to Cards ')
+			.setName('Default location for new canvas files')
+			.addDropdown((dropDown) => {
+				dropDown
+					.addOption(Location[Location.VaultFolder], 'Vault folder')
+					.addOption(
+						Location[Location.SameFolder],
+						'Same folder as current file'
+					)
+					.addOption(
+						Location[Location.SpecifiedFolder],
+						'In the folder specified below'
+					)
+					.setValue(
+						Location[this.plugin.settings.newFileLocation] ||
+						Location[Location.VaultFolder]
+					)
+					.onChange(async (value) => {
+						this.plugin.settings.newFileLocation =
+							Location[value as keyof typeof Location];
+						await this.plugin.saveSettings();
+						this.display();
+					});
+			});
+		if (this.plugin.settings.newFileLocation == Location.SpecifiedFolder) {
+			new Setting(containerEl)
+				.setName('Folder to create new canvas files in')
+				.addText((text) => {
+					text
+						.setPlaceholder('Example: folder 1/folder 2')
+						.setValue(this.plugin.settings.customFileLocation)
+						.onChange(async (value) => {
+							this.plugin.settings.customFileLocation = value;
+							await this.plugin.saveSettings();
+						});
+				});
+		}
+
+		containerEl.createEl('h1', { text: 'Canvas → set note properties' });
+		containerEl.createEl('h2', { text: 'Toggle property setting per type' });
+		new Setting(containerEl)
+			.setName('Set note properties for connections to cards ')
 			.setDesc('Default: true')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.useCards)
@@ -483,18 +746,7 @@ class SemanticCanvasSettingsTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Default Property Label for connections to Cards')
-			.setDesc('Leave blank to only create properties for labeled edges. Default: cards')
-			.addText(text => text
-				.setPlaceholder('Default cards key...')
-				.setValue(this.plugin.settings.cardDefault)
-				.onChange(async (value) => {
-					this.plugin.settings.cardDefault = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Set note properties for connections to Web Embeds ')
+			.setName('Set note properties for connections to urls')
 			.setDesc('Default: true')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.useUrls)
@@ -504,18 +756,7 @@ class SemanticCanvasSettingsTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Default Property Label for connections to Urls')
-			.setDesc('Leave blank to only create properties for labeled edges. Default: urls')
-			.addText(text => text
-				.setPlaceholder('Default urls key...')
-				.setValue(this.plugin.settings.urlDefault)
-				.onChange(async (value) => {
-					this.plugin.settings.urlDefault = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Set note properties for connections to Files')
+			.setName('Set note properties for connections to files')
 			.setDesc('Default: true')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.useFiles)
@@ -523,18 +764,6 @@ class SemanticCanvasSettingsTab extends PluginSettingTab {
 					this.plugin.settings.useFiles = value;
 					await this.plugin.saveSettings();
 				}));
-
-		new Setting(containerEl)
-			.setName('Default Property Label for connections to Files')
-			.setDesc('Leave blank to only create properties for labeled edges. Default: files')
-			.addText(text => text
-				.setPlaceholder('Default files key...')
-				.setValue(this.plugin.settings.fileDefault)
-				.onChange(async (value) => {
-					this.plugin.settings.fileDefault = value;
-					await this.plugin.saveSettings();
-				}));
-
 
 		new Setting(containerEl)
 			.setName('Set note properties based on containment in groups')
@@ -546,8 +775,43 @@ class SemanticCanvasSettingsTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		containerEl.createEl('h2', { text: 'Default property keys for unlabeled connections' });
 		new Setting(containerEl)
-			.setName('Default Property Label for containment in Groups')
+			.setName('Property key for unlabeled connections to: cards')
+			.setDesc('Leave blank to only create properties for labeled edges. Default: cards')
+			.addText(text => text
+				.setPlaceholder('Default cards key...')
+				.setValue(this.plugin.settings.cardDefault)
+				.onChange(async (value) => {
+					this.plugin.settings.cardDefault = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Property key for unlabeled connections to: urls')
+			.setDesc('Leave blank to only create properties for labeled edges. Default: urls')
+			.addText(text => text
+				.setPlaceholder('Default urls key...')
+				.setValue(this.plugin.settings.urlDefault)
+				.onChange(async (value) => {
+					this.plugin.settings.urlDefault = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Property key for unlabeled connections to: files')
+			.setDesc('Leave blank to only create properties for labeled edges. Default: files')
+			.addText(text => text
+				.setPlaceholder('Default files key...')
+				.setValue(this.plugin.settings.fileDefault)
+				.onChange(async (value) => {
+					this.plugin.settings.fileDefault = value;
+					await this.plugin.saveSettings();
+				}));
+
+		containerEl.createEl('h2', { text: 'Property keys for group containment' });
+		new Setting(containerEl)
+			.setName('Property key for groups')
 			.setDesc('Default: groups')
 			.addText(text => text
 				.setPlaceholder('Default groups key...')

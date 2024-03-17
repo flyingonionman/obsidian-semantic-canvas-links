@@ -33,9 +33,6 @@ Open a canvas then use command palette or file menu to run either:
 Open a note then use use command palette or file menu to run:
 - `Semantic Canvas: Create canvas based on note`
 
-> 📋 Properties are *always* **List**-typed
-> It is not possible to edit Text, Number, Checkbox, Date, or Date & Time properties using this plugin.
-
 ### Behaviors
 > 📖 Node Types  
 > Nodes on a canvas are typed as one of `card`, `url`, `file`, or `group`. 
@@ -52,6 +49,10 @@ Semantic Canvas modifies properties of **Markdown files** based on how they're c
 - If a note is connected to a `group`, it behaves as though the note is connected to every node contained in the group
 
 #### Note → Create Canvas
+
+> 📋 Properties are *always* **List**-typed
+> It is not possible to edit Text, Number, Checkbox, Date, or Date & Time properties using this plugin.
+
 Semantic Canvas creates a new canvas file based on the active note. It will be placed in a configurable location, and will graphically represent all `list-type` properties. This canvas could then be edited manually, and those changes can be pushed back to the related notes. 
 
 ## Attribution

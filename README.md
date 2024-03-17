@@ -50,7 +50,7 @@ Semantic Canvas modifies properties of **Markdown files** based on how they're c
 
 #### Note → Create Canvas
 
-> 📋 Properties are *always* **List**-typed
+> 📋 Properties are *always* **List**-typed  
 > It is not possible to edit Text, Number, Checkbox, Date, or Date & Time properties using this plugin.
 
 Semantic Canvas creates a new canvas file based on the active note. It will be placed in a configurable location, and will graphically represent all `list-type` properties. This canvas could then be edited manually, and those changes can be pushed back to the related notes. 

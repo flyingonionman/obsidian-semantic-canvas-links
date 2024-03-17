@@ -7,17 +7,17 @@ Set properties for all Markdown files included in your canvas based on their gro
 ## Example Screenshots
 
 ### Canvas → Edit Note Props
-One command to make this canvas:
+One command to make this canvas...
 ![Before image](assets/before.png)
 
-Update properties of all the notes on it:
+...update properties of all the notes it contains:
 ![After image](assets/after.png)
 
 ### Note → Create Canvas
-Another command to turn this note:
+Another command to turn this note...
 ![Before image](assets/before2.png)
 
-Into a new canvas containing its `list-type` properties:
+...into a new canvas containing its `list-type` properties:
 ![After image](assets/after2.png)
 
 ## Use Cases
@@ -38,7 +38,7 @@ Open a note then use use command palette or file menu to run:
 > Nodes on a canvas are typed as one of `card`, `url`, `file`, or `group`. 
 
 #### Canvas → Edit Note Files
-Semantic Canvas modifies properties of **Markdown files** based on how they're connected to nodes (i.e. `files`, `groups`, `cards`, `urls`) in the active Canvas.
+Semantic Canvas modifies properties of **Markdown files** based on how they're connected to nodes (i.e. `files`, `groups`, `cards`, `urls`) in the active Canvas. See the four example screenshots below to see how different canvas situations are turned into properties.
 
 ![Behaviors image](assets/behaviors.png)
 

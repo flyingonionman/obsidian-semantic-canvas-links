@@ -172,7 +172,7 @@ class FileNode {
 
 		function convertToWikilink(otherSide: CanvasFileData, that: FileNode): string {
 			const otherFile = that.app.metadataCache.getFirstLinkpathDest(otherSide.file, that.filePath) as TFile;
-			let linkTextContent = that.app.metadataCache.fileToLinktext(otherFile,that.filePath);
+			let linkTextContent = that.app.metadataCache.fileToLinktext(otherFile, that.filePath);
 			/* see if Subpaths were used */
 			if (otherSide.hasOwnProperty("subpath")) linkTextContent = linkTextContent + otherSide.subpath;
 			return "[[" + linkTextContent + "]]";
@@ -223,9 +223,9 @@ export default class SemanticCanvasPlugin extends Plugin {
 				if ((<TFile>file).extension === 'md') {
 					menu.addItem((item) => {
 						item.setTitle('Create canvas based on note')
-							.setIcon('cloud')
+							.setIcon('up-and-down-arrows')
 							.onClick(() => {
-								this.createCanvasFromNote();
+								this.createCanvasFromNote(file as TFile);
 							});
 					});
 				}
@@ -234,16 +234,16 @@ export default class SemanticCanvasPlugin extends Plugin {
 				if ((<TFile>file).extension === 'canvas') {
 					menu.addItem((item) => {
 						item.setTitle('Append note properties based on canvas')
-							.setIcon('cloud')
+							.setIcon('up-and-down-arrows')
 							.onClick(() => {
-								this.pushCanvasToNoteProperties(false);
+								this.pushCanvasToNoteProperties(false, file as TFile);
 							});
 					});
 					menu.addItem((item) => {
 						item.setTitle('Overwrite note properties based on canvas')
-							.setIcon('cloud')
+							.setIcon('up-and-down-arrows')
 							.onClick(() => {
-								this.pushCanvasToNoteProperties(true);
+								this.pushCanvasToNoteProperties(true, file as TFile);
 							});
 					});
 				}
@@ -254,8 +254,9 @@ export default class SemanticCanvasPlugin extends Plugin {
 	/**
 	 * The main function for using a note to create a new canvas.
 	 */
-	async createCanvasFromNote() {
-		let file = this.app.workspace.getActiveFile();
+	async createCanvasFromNote(file?: TFile) {
+		//@ts-expect-error
+		if (file === undefined) file = this.app.workspace.getActiveFile();
 		if (!file || file?.extension !== 'md') {
 			new Notice('Aborted: Active file is not Markdown file');
 			return;
@@ -359,7 +360,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 						const base = splitToBaseAndAlias[0];
 						const splitToPathAndSubpath = base.split('#');
 						const path = splitToPathAndSubpath[0];
-						if(splitToPathAndSubpath.length>1) newNode.subpath = "#" + splitToPathAndSubpath[1];
+						if (splitToPathAndSubpath.length > 1) newNode.subpath = "#" + splitToPathAndSubpath[1];
 						const foundFile = that.app.metadataCache.getFirstLinkpathDest(path, file.path);
 						if (foundFile !== null) newNode.file = foundFile.path;
 						//else just leaving the link broken
@@ -458,8 +459,9 @@ export default class SemanticCanvasPlugin extends Plugin {
 	 * The main function for using an existing canvas to update note properties.
 	 * @param overwrite `true` will overwrite existing values for keys
 	 */
-	async pushCanvasToNoteProperties(overwrite: boolean) {
-		let file = this.app.workspace.getActiveFile();
+	async pushCanvasToNoteProperties(overwrite: boolean, file?: TFile) {
+		//@ts-expect-error
+		if (file === undefined) file = this.app.workspace.getActiveFile();
 		if (!file || file?.extension !== 'canvas') {
 			new Notice('Aborted: Active file is not Canvas');
 			return;

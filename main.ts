@@ -249,6 +249,16 @@ export default class SemanticCanvasPlugin extends Plugin {
 				}
 			})
 		);
+		// this.registerEvent(
+
+		// 	this.workspace.on(
+		// 		'semantic-canvas:popup-menu-created',
+		// 		() => {
+		// 			console.log('sheeeet');
+
+		// 		}
+		// 	)
+		// )
 	}
 
 	/**

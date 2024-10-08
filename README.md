@@ -1,8 +1,16 @@
 # Obsidian Semantic Canvas Plugin
 
+> [!tip] There is a [Demo video](https://youtu.be/fI1sWoBZ8yw)!
+
 This is a plugin for [Obsidian](https://obsidian.md) gives canvases the power to edit file properties *visually*.
 
 Set properties for all Markdown files included in your canvas based on their group membership, links to files, links to cards, and links to web embeds. Create new properties or edit existing ones on multiple markdown notes at once through the canvas. Create **semantic links** *(aka typed links or labeled links)* between notes and work with them using an intuitive graph-based approach. Use notes to create canvases. Use canvases to update notes.
+
+### New in V1.2
+Now capable of more fine-grained controls:
+- Pull properties into existing canvases
+- Update properties for individual nodes, rather than all at once
+- Option to ignore "alias"/"alises" key 
 
 ## Example Screenshots
 
@@ -26,12 +34,26 @@ Another command to turn this note...
 - Venn Diagrams & Kanbans
 
 ## Usage
-Open a canvas then use command palette or file menu to run either:
-- `Semantic Canvas: Append Note Properties based on Canvas` 
-- `Semantic Canvas: Overwrite Note Properties based on Canvas`
+This plugin adds functions to the command palette and note/canvas menus. 
+
+Open a canvas then use command palette or file menu to run:
+- `Semantic Canvas: Append Note Properties based on canvas` 
+    - Will add to note properties without removing any
+- `Semantic Canvas: Overwrite Note Properties based on canvas`
+    - Will replace note properties
+- `Semantic Canvas: Pull in properties for all notes on canvas`
+    - Will create new nodes & connections on the canvas based on properties of notes
+- `Semantic Canvas: Show existing connections between notes on canvas`
+    - Will create new connections (but not nodes) in the canvas based on properties of notes
 
 Open a note then use use command palette or file menu to run:
 - `Semantic Canvas: Create canvas based on note`
+
+Right click on nodes in a canvas to:
+- `Pull note properties in to canvas`
+    - Will create new nodes and arrows to fully represent all the list-type properties for the selected node
+- `Show existing connections`
+    - Will create new arrows, but not nodes
 
 ### Behaviors
 > 📖 Node Types  

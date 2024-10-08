@@ -233,27 +233,64 @@ export default class SemanticCanvasPlugin extends Plugin {
 		 * Right-clicking edges. Could make for a more discrete edit possibility, but deferring
 		 * to a later date 
 		 */
-		// this.registerEvent(
-		// 	//@ts-expect-error - it works, despite TypeScript not seeing the 'canvas:' methods
-		// 	this.app.workspace.on("canvas:edge-menu", (menu: Menu, edge: any) => {
-		// 		menu.addItem((item: any) => {
-		// 			item.setTitle("Remove property from source note")
-		// 				.setIcon("up-and-down-arrows")
-		// 				.onClick(() => {
-		// 					//#TODO - implement
-		// 					console.log(edge)
-		// 				})
-		// 		})
-		// menu.addItem((item: any) => {
-		// 			item.setTitle("Update property in source note")
-		// 				.setIcon("up-and-down-arrows")
-		// 				.onClick(() => {
-		// 					//#TODO - implement
-		// 					console.log(edge)
-		// 				})
-		// 		})
-		// 	})
-		// )
+		this.registerEvent(
+			//@ts-expect-error - it works, despite TypeScript not seeing the 'canvas:' methods
+			this.app.workspace.on("canvas:edge-menu", (menu: Menu, edge: any) => {
+				if (edge.label === '' || edge.toLineEnd === null || edge.from.node.filePath === undefined) return;
+				const isBidirectional = edge.fromLineEnd !== null && edge.to.node.filePath !== undefined;
+				menu.addItem((item: any) => {
+					item.setTitle(isBidirectional ? "Remove property from both notes" : "Remove property from source note")
+						.setIcon("up-and-down-arrows")
+						.onClick(() => {
+							const file = this.app.vault.getFileByPath(edge.from.node.filePath);
+							if (file === null) return;
+							this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+								frontmatter[edge.label] = undefined;
+							})
+
+							//supporting bi-directionally
+							if (isBidirectional) {
+								const otherFile = this.app.vault.getFileByPath(edge.to.node.filePath);
+								if (otherFile === null) return;
+								this.app.fileManager.processFrontMatter(otherFile, (frontmatter) => {
+									frontmatter[edge.label] = undefined;
+								})
+							}
+						})
+				})
+				menu.addItem((item: any) => {
+					item.setTitle(isBidirectional ? "Update property in both notes" : "Update property in source note")
+						.setIcon("up-and-down-arrows")
+						.onClick(() => {
+							let toVal = edge.to.node.text;
+							if (toVal === undefined) {
+								const filenameAsWikiLink = "[[" + edge.to.node.filePath.split('/').pop()!.substring(0, edge.to.node.filePath.split('/').pop()!.length - 3) + "]]";
+								toVal = filenameAsWikiLink;
+							}
+
+							const file = this.app.vault.getFileByPath(edge.from.node.filePath);
+							if (file === null) return;
+							this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+								frontmatter[edge.label] = toVal;
+							})
+
+							//supporting bi-directionally
+							if (isBidirectional) {
+								let otherToVal = edge.from.node.text;
+								if (otherToVal === undefined) {
+									const filenameAsWikiLink = "[[" + edge.from.node.filePath.split('/').pop()!.substring(0, edge.from.node.filePath.split('/').pop()!.length - 3) + "]]";
+									otherToVal = filenameAsWikiLink;
+								}
+								const otherFile = this.app.vault.getFileByPath(edge.to.node.filePath);
+								if (otherFile === null) return;
+								this.app.fileManager.processFrontMatter(otherFile, (frontmatter) => {
+									frontmatter[edge.label] = otherToVal;
+								})
+							}
+						})
+				})
+			})
+		)
 
 		/**
 		 * was trying to get somethign to fire when right-clicking an edge or non-file node, but no.
@@ -715,10 +752,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 		if (fileView.file === null) throw new Error('fileView had no associated file');
 		const visibleCanvasData = JSON.parse(fileView.data) as CanvasData
 
-		const canvasMap = await SemanticCanvasPlugin.getCanvasMap(fileView.file);
-
-		if (canvasMap === undefined) throw new Error("Canvas Map was unable to be created");
-
 		//making "that" reference for use by makeNodeOrGroupOfNodesFor
 		const that = this;
 		const newNodeOrGroup = makeNodeOrGroupOfNodesFor(textArr, label);
@@ -743,8 +776,8 @@ export default class SemanticCanvasPlugin extends Plugin {
 			propVals.forEach(text => {
 				let newNode: any = {
 					id: (Math.random() + 1).toString(36).substring(4),
-					x: x,
-					y: y + (110 * returnObj.length),
+					x: x - 100,
+					y: y - 50 + (110 * returnObj.length),
 					width: 200,
 					height: 100,
 				}
@@ -771,8 +804,8 @@ export default class SemanticCanvasPlugin extends Plugin {
 			if (propVals.length > 1) {
 				let newNode: any = {
 					id: (Math.random() + 1).toString(36).substring(4),
-					x: x - 10,
-					y: y - 10,
+					x: x - 110,
+					y: y - 60,
 					width: 220,
 					height: 10 + (110 * returnObj.length),
 					type: 'group',
@@ -893,7 +926,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 	}
 
 	/**
-	 * Gets the **list type** propertis from the passed-in note file
+	 * Gets the **list type** properties from the passed-in note file
 	 * @param file the .md file to get properties from
 	 * @returns list-type properties map
 	 */

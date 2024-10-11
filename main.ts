@@ -1,7 +1,8 @@
-import { App, Menu, MetadataCache, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, TextFileView, View, getFrontMatterInfo } from 'obsidian';
+import { App, Menu, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder, TextFileView } from 'obsidian';
 import { AllCanvasNodeData, CanvasData, CanvasEdgeData, CanvasFileData, CanvasGroupData, CanvasLinkData, CanvasNodeData, CanvasTextData, NodeSide } from 'canvas';
+import { FileNode } from 'FileNode';
 
-interface SemanticCanvasPluginSettings {
+export interface SemanticCanvasPluginSettings {
 	/* Note ➡️ canvas */
 	newFileLocation: Location;
 	customFileLocation: string;
@@ -15,9 +16,9 @@ interface SemanticCanvasPluginSettings {
 	useFiles: boolean;
 	useGroups: boolean;
 	/**
-	 * Whether or not the "Alias" key should create nodes
+	 * List of keys to ignore when doing all the things involving note properties
 	 */
-	includeAlias: boolean;
+	excludeKeys: string;
 }
 
 export enum Location {
@@ -33,17 +34,22 @@ interface CanvasNodeMap {
 	groups?: Array<CanvasGroupData>
 }
 
-interface CanvasMap extends CanvasNodeMap {
+export interface CanvasMap extends CanvasNodeMap {
 	edges?: Array<CanvasEdgeData & { isBidirectional: boolean }>
 }
 
-type ConnectionProps = {
+export type ConnectionProps = {
 	otherSideId?: string;
 	otherSide?: CanvasNodeData
 	type?: 'card' | 'url' | 'file' | 'group';
 	isBidirectional?: boolean;
 	propLbl?: string;
 	propVal?: string;
+}
+
+type FileAndPropsToSetMap = {
+	file: TFile,
+	props: null | { [key: string]: string[] }
 }
 
 type RawCanvasObj = {
@@ -65,125 +71,7 @@ const DEFAULT_SETTINGS: SemanticCanvasPluginSettings = {
 	useUrls: true,
 	useFiles: true,
 	useGroups: false,
-	includeAlias: false
-}
-
-/**
- * Represents an instance of a node on the canvas that represents a file in the vault
- */
-class FileNode {
-	filePath: string;
-	propsOnCanvas: any;
-	app: App;
-
-	/**
-	 * A Node on the Canvas that represents a file in the vault
-	 * @param file 
-	 * @param data 
-	 * @param settings 
-	 * @returns 
-	 */
-	constructor(file: CanvasFileData, data: CanvasMap, settings: SemanticCanvasPluginSettings, appRef: App) {
-		this.filePath = file.file;
-		this.propsOnCanvas = {};
-		this.app = appRef; //for access to metadatacache
-
-		if (file.inGroups === undefined) file.inGroups = [];
-
-		let relevantIds = [file.id]; //the node ID itself...
-		relevantIds = [file.id, ...file.inGroups.map((g: any) => g.id)]; //...+ any groups that contain it
-
-		const relevantEdges = data.edges?.filter(edge => {
-			if (relevantIds.some(id => edge.fromNode == id)) return true
-			/* In case link is bi-directional */
-			if (relevantIds.some(id => edge.toNode == id && edge.isBidirectional)) return true
-			return false
-		})
-
-		if (relevantEdges?.length === 0 && file.inGroups.length === 0) {
-			this.propsOnCanvas = null;
-			return
-		}
-
-		let edges: ConnectionProps[] = relevantEdges?.map(edge => {
-			let newEdge: ConnectionProps = {
-				otherSideId: edge.toNode,
-				isBidirectional: edge.isBidirectional
-			}
-			if (file.id === newEdge.otherSideId) newEdge.otherSideId = edge.fromNode;
-			newEdge.otherSide = data.cards?.find(card => card.id === newEdge.otherSideId);
-			newEdge.type = 'card';
-			newEdge.propLbl = settings.cardDefault
-			if (newEdge.otherSide === undefined) {
-				newEdge.otherSide = data.urls?.find(url => url.id === newEdge.otherSideId);
-				newEdge.type = 'url';
-				newEdge.propLbl = settings.urlDefault
-			}
-			if (newEdge.otherSide === undefined) {
-				newEdge.otherSide = data.files?.find(file => file.id === newEdge.otherSideId);
-				newEdge.type = 'file';
-				newEdge.propLbl = settings.fileDefault
-			}
-			if (newEdge.otherSide === undefined) {
-				newEdge.otherSide = data.groups?.find(group => group.id === newEdge.otherSideId);
-				//#TODO - can you prevent "in group" memberships here when there's an arrow to the group with the same label as the group?
-				newEdge.type = 'group';
-			}
-			if (newEdge.otherSide === undefined) throw new Error('Could not find other side of edge');
-			if (newEdge.type === 'card') newEdge.propVal = newEdge.otherSide.text;
-			if (newEdge.type === 'url') newEdge.propVal = newEdge.otherSide.url;
-			if (newEdge.type === 'file') newEdge.propVal = convertToWikilink(newEdge.otherSide as CanvasFileData, this)
-			if (edge.label !== undefined) newEdge.propLbl = edge.label;
-			return newEdge
-		}).filter(newEdge => newEdge.propLbl !== undefined && newEdge.propLbl !== '')!;
-
-		/* ALL PROPERTIES ARE ARRAYS OF STRINGS */
-
-		/* this -> contained in group */
-		if (file.inGroups.length > 0 && settings.useGroups) {
-			this.propsOnCanvas[settings.groupDefault] = file.inGroups.map((group: CanvasGroupData) => group.label);
-		}
-
-		/* this -> card */
-		if (settings.useCards) {
-			edges.filter(edge => edge.type === 'card').forEach(edge => {
-				if (!this.propsOnCanvas.hasOwnProperty(edge.propLbl)) {
-					this.propsOnCanvas[edge.propLbl!] = [edge.propVal];
-					return
-				}
-				this.propsOnCanvas[edge.propLbl!].push(edge.propVal);
-			})
-		}
-
-		/* this -> url */
-		if (settings.useUrls) {
-			edges.filter(edge => edge.type === 'url').forEach(edge => {
-				if (!this.propsOnCanvas.hasOwnProperty(edge.propLbl)) {
-					this.propsOnCanvas[edge.propLbl!] = [edge.propVal];
-					return
-				}
-				this.propsOnCanvas[edge.propLbl!].push(edge.propVal);
-			})
-		}
-		/* this -> note */
-		if (settings.useFiles) {
-			edges.filter(edge => edge.type === 'file').forEach(edge => {
-				if (!this.propsOnCanvas.hasOwnProperty(edge.propLbl)) {
-					this.propsOnCanvas[edge.propLbl!] = [edge.propVal];
-					return
-				}
-				this.propsOnCanvas[edge.propLbl!].push(edge.propVal);
-			})
-		}
-
-		function convertToWikilink(otherSide: CanvasFileData, that: FileNode): string {
-			const otherFile = that.app.metadataCache.getFirstLinkpathDest(otherSide.file, that.filePath) as TFile;
-			let linkTextContent = that.app.metadataCache.fileToLinktext(otherFile, that.filePath);
-			/* see if Subpaths were used */
-			if (otherSide.hasOwnProperty("subpath")) linkTextContent = linkTextContent + otherSide.subpath;
-			return "[[" + linkTextContent + "]]";
-		}
-	}
+	excludeKeys: 'alias,aliases,tags,cssClasses'
 }
 
 export default class SemanticCanvasPlugin extends Plugin {
@@ -197,7 +85,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 			id: 'set-canvas-to-note-properties',
 			name: 'Overwrite note properties based on canvas',
 			callback: () => {
-				this.pushCanvasToNoteProperties(true);
+				this.pushCanvasDataToNotes(true);
 			}
 		});
 
@@ -206,19 +94,20 @@ export default class SemanticCanvasPlugin extends Plugin {
 			id: 'append-canvas-to-note-properties',
 			name: 'Append note properties based on canvas',
 			callback: () => {
-				this.pushCanvasToNoteProperties(false);
+				this.pushCanvasDataToNotes(false);
 			}
 		});
 
-		this.addCommand({
-			id: 'update-canvas-with-current-note-data',
-			name: 'Update canvas with current note data',
-			callback: () => {
-				console.log('yo');
-			}
-		})
+		/* This command doesn't yet exist */
+		// this.addCommand({
+		// 	id: 'update-canvas-with-current-note-data',
+		// 	name: 'Update canvas with current note data',
+		// 	callback: () => {
+		// 		console.log('yo');
+		// 	}
+		// })
 
-		/* This command will add new values onto the end of an already-existing property */
+		/* This command will create a canvas from a note*/
 		this.addCommand({
 			id: 'create-canvas-from-note',
 			name: 'Create canvas based on note',
@@ -230,17 +119,17 @@ export default class SemanticCanvasPlugin extends Plugin {
 		this.addSettingTab(new SemanticCanvasSettingsTab(this.app, this));
 
 		/**
-		 * Right-clicking edges. Could make for a more discrete edit possibility, but deferring
-		 * to a later date 
+		 * Right-clicking edges.
 		 */
 		this.registerEvent(
 			//@ts-expect-error - it works, despite TypeScript not seeing the 'canvas:' methods
 			this.app.workspace.on("canvas:edge-menu", (menu: Menu, edge: any) => {
 				if (edge.label === '' || edge.toLineEnd === null || edge.from.node.filePath === undefined) return;
 				const isBidirectional = edge.fromLineEnd !== null && edge.to.node.filePath !== undefined;
+				menu.addSeparator();
 				menu.addItem((item: any) => {
 					item.setTitle(isBidirectional ? "Remove property from both notes" : "Remove property from source note")
-						.setIcon("up-and-down-arrows")
+						.setIcon("list-minus")
 						.onClick(() => {
 							const file = this.app.vault.getFileByPath(edge.from.node.filePath);
 							if (file === null) return;
@@ -256,11 +145,13 @@ export default class SemanticCanvasPlugin extends Plugin {
 									frontmatter[edge.label] = undefined;
 								})
 							}
+							if (isBidirectional) new Notice(`Successfully removed prop in 2 files`)
+							if (!isBidirectional) new Notice(`Successfully removed prop in 1 file`)
 						})
 				})
 				menu.addItem((item: any) => {
 					item.setTitle(isBidirectional ? "Update property in both notes" : "Update property in source note")
-						.setIcon("up-and-down-arrows")
+						.setIcon("list-restart")
 						.onClick(() => {
 							let toVal = edge.to.node.text;
 							if (toVal === undefined) {
@@ -287,14 +178,15 @@ export default class SemanticCanvasPlugin extends Plugin {
 									frontmatter[edge.label] = otherToVal;
 								})
 							}
+
+							if (isBidirectional) new Notice(`Successfully set 2 props in 2 files`)
+							if (!isBidirectional) new Notice(`Successfully set 1 prop in 1 file`)
 						})
 				})
 			})
 		)
 
-		/**
-		 * was trying to get somethign to fire when right-clicking an edge or non-file node, but no.
-		 */
+		/* Dragging an arrow from a node and letting go on a blankk space */
 		this.registerEvent(
 			//@ts-expect-error - it works, despite TypeScript not seeing the 'canvas:' methods
 			this.app.workspace.on("canvas:node-connection-drop-menu", (menu: Menu, edge: any, third: any) => {
@@ -303,7 +195,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 				noteProps.forEach(prop => {
 					menu.addItem((item: any) => {
 						const key = Object.keys(prop)[0];
-						item.setTitle("Pull property: " + key)
+						item.setTitle("Property: " + key)
 							.setIcon("down-arrow")
 							.onClick(() => {
 								const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
@@ -322,9 +214,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 			})
 		)
 
-		/**
-		 * was trying to get somethign to fire when right-clicking an edge or non-file node, but no.
-		 */
+		/* Selecting a group of nodes with a click and drag */
 		// this.registerEvent(
 		////@ts-expect-error - it works, despite TypeScript not seeing the 'canvas:' methods
 		// this.app.workspace.on("canvas:selection-menu", (menu: Menu, edge: any) => {
@@ -334,88 +224,103 @@ export default class SemanticCanvasPlugin extends Plugin {
 		// })
 		// )
 
-
-		/**
-		 * was trying to get somethign to fire when right-clicking an edge or non-file node, but no.
-		 */
+		/* Right clicking on node in canvas*/
 		this.registerEvent(
 			//@ts-expect-error - it works, despite TypeScript not seeing the 'canvas:' methods
 			this.app.workspace.on("canvas:node-menu", (menu: Menu, node: CanvasNodeData) => {
 				if (node.file === undefined) return
 				menu.addItem((item: any) => {
-					item.setTitle('Pull note properties in to canvas')
-						.setIcon('arrow-down-to-line')
+					item.setTitle('Pull note properties to canvas')
+						.setIcon('file-down')
 						.onClick(() => {
 							const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
-							if (activeView === null) {
-								new Notice('Aborted: Active view was null');
-								return;
-							}
-							if (activeView?.file?.extension !== 'canvas') {
-								new Notice('Aborted: Active view is not a canvas');
-								return;
-							}
-							this.pullNotePropertiesToCanvas(activeView, [node], false);
+							if (!isValidActiveView(activeView)) return;
+							this.pullNotePropertiesToCanvas(activeView!, [node], false);
 						});
 				})
 				menu.addItem((item: any) => {
 					item.setTitle('Show existing connections')
-						.setIcon('arrow-down-to-line')
+						.setIcon('git-compare-arrows')
 						.onClick(() => {
 							const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
-							if (activeView === null) {
-								new Notice('Aborted: Active view was null');
-								return;
-							}
-							if (activeView?.file?.extension !== 'canvas') {
-								new Notice('Aborted: Active view is not a canvas');
-								return;
-							}
-							this.pullNotePropertiesToCanvas(activeView, [node], true);
+							if (!isValidActiveView(activeView)) return;
+							this.pullNotePropertiesToCanvas(activeView!, [node], true);
 						});
 				})
+				menu.addItem((item: any) => {
+					item.setTitle('Append properties in note')
+						.setIcon('list-plus')
+						.onClick(() => {
+							const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
+							if (!isValidActiveView(activeView)) return;
+							this.pushCanvasDataToNotes(false, activeView!.file!, node.file.path);
+						});
+				})
+				menu.addItem((item: any) => {
+					item.setTitle('Overwrite properties in note')
+						.setIcon('list-restart')
+						.onClick(() => {
+							const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
+							if (!isValidActiveView(activeView)) return;
+							this.pushCanvasDataToNotes(true, activeView!.file!, node.file.path);
+						});
+				})
+				function isValidActiveView(activeView: TextFileView | null): boolean {
+					if (activeView === null) {
+						new Notice('Aborted: Active view was null');
+						return false;
+					}
+					if (activeView.file === null) {
+						new Notice('Aborted: Active view has no file property');
+						return false;
+					}
+					if (activeView?.file?.extension !== 'canvas') {
+						new Notice('Aborted: Active view is not a canvas');
+						return false;
+					}
+					return true;
+				}
 			})
 		)
 
 		/* File Menu */
 		this.registerEvent(
-			this.app.workspace.on("file-menu", (menu, file, test) => {
+			this.app.workspace.on("file-menu", (menu, file) => {
 				/* If visible window is Canvas, then we're in a right-click on node menu */
-				const currentWindowFileType = this.app.workspace.getActiveFile()?.extension
+				const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
 
 				if (file instanceof TFolder || file === undefined) return;
 				/* If Markdown file offer to create canvas */
-				if ((<TFile>file).extension === 'md') {//} && currentWindowFileType == 'md') {
+				if ((<TFile>file).extension === 'md' && activeView?.file?.extension !== 'canvas') {
 					menu.addItem((item) => {
 						item.setTitle('Create canvas based on note')
-							.setIcon('up-and-down-arrows')
+							.setIcon('square-plus')
 							.onClick(() => {
 								this.createCanvasFromNote(file as TFile);
 							});
 					});
 				}
 
-
 				/* If Canvas offer to update notes */
 				if ((<TFile>file).extension === 'canvas') {
 					menu.addItem((item) => {
 						item.setTitle('Append note properties based on canvas')
-							.setIcon('up-and-down-arrows')
+							.setIcon('list-plus')
 							.onClick(() => {
-								this.pushCanvasToNoteProperties(false, file as TFile);
+								this.pushCanvasDataToNotes(false, file as TFile);
 							});
 					});
 					menu.addItem((item) => {
 						item.setTitle('Overwrite note properties based on canvas')
-							.setIcon('up-and-down-arrows')
+							.setIcon('list-restart')
 							.onClick(() => {
-								this.pushCanvasToNoteProperties(true, file as TFile);
+								this.pushCanvasDataToNotes(true, file as TFile);
 							});
 					});
 					/* and offer to update Canvas with current note */
 					menu.addItem((item) => {
 						item.setTitle('Pull in properies for all notes on this canvas')
-							.setIcon('up-and-down-arrows')
+							.setIcon('file-down')
 							.onClick(() => {
 								const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
 								if (activeView === null) {
@@ -432,7 +337,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 					});
 					menu.addItem((item) => {
 						item.setTitle('Show all connections between notes on this canvas')
-							.setIcon('up-and-down-arrows')
+							.setIcon('git-compare-arrows')
 							.onClick(() => {
 								const activeView = this.app.workspace.getActiveViewOfType(TextFileView);
 								if (activeView === null) {
@@ -466,7 +371,6 @@ export default class SemanticCanvasPlugin extends Plugin {
 		const name = file.basename;
 		new Notice('Creating canvas for ' + name);
 
-		const allProperties = this.app.metadataCache.getCache(file.path)?.frontmatter;
 		let listTypeProps = this.getNoteData(file.path);
 
 		const that = this;
@@ -632,37 +536,19 @@ export default class SemanticCanvasPlugin extends Plugin {
 		}
 	}
 
-	static isGroup(val: Array<string>) {
-		return val.length > 1;
-	}
-
-	static isFile(val: string): boolean {
-		if (val.substring(0, 2) !== '[[') return false;
-		if (val.substring(val.length - 2) !== ']]') return false;
-		if (val.split('[[').length !== 2) return false;
-		return true
-	}
-
-	static isURL(val: string): boolean {
-		if (val.toUpperCase().substring(0, 4) !== 'HTTP') return false
-		if (!val.contains('//')) return false
-		if (val.length < 8) return false
-		return true
-	}
-
 	/**
 	 * The main function for using an existing canvas to update note properties.
 	 * @param overwrite `true` will overwrite existing values for keys
 	 */
-	async pushCanvasToNoteProperties(overwrite: boolean, file?: TFile) {
+	async pushCanvasDataToNotes(overwrite: boolean, canvasFile?: TFile, onlyUpdateNoteAtPath?: string) {
 		//@ts-expect-error
-		if (file === undefined) file = this.app.workspace.getActiveFile();
-		if (!file || file?.extension !== 'canvas') {
+		if (canvasFile === undefined) canvasFile = this.app.workspace.getActiveFile();
+		if (!canvasFile || canvasFile?.extension !== 'canvas') {
 			new Notice('Aborted: Active file is not Canvas');
 			return;
 		}
 
-		let data = await SemanticCanvasPlugin.getCanvasMap(file);
+		let data = await SemanticCanvasPlugin.getCanvasMap(canvasFile);
 
 		if (!data) {
 			new Notice('Aborted: No Canvas data found');
@@ -689,9 +575,11 @@ export default class SemanticCanvasPlugin extends Plugin {
 		/* Remove any unaffected nodes before seeking files */
 		dedupedFileNodes = dedupedFileNodes.filter(fileNode => fileNode.propsOnCanvas && Object.keys(fileNode.propsOnCanvas).length > 0);
 
-		let actualFilesMap: Array<any> = dedupedFileNodes.map(fileNode => {
+		let actualFilesMap: Array<FileAndPropsToSetMap> = dedupedFileNodes.map(fileNode => {
+			const file = this.app.vault.getFileByPath(fileNode.filePath);
+			if (file === null) throw new Error('No file found at path ' + fileNode.filePath)
 			return {
-				file: this.app.vault.getFileByPath(fileNode.filePath),
+				file: file,
 				props: fileNode.propsOnCanvas
 			}
 		});
@@ -699,26 +587,38 @@ export default class SemanticCanvasPlugin extends Plugin {
 		/* Remove any non-markdown files before setting properties */
 		actualFilesMap = actualFilesMap.filter(fileMap => fileMap.file?.extension === 'md');
 
+		/* 
+			Filtering to only the single file we care about, in the case that we only want
+			to update one file. This is being used for the right-click menu on nodes inside
+			of canvases. It's less efficient, case we scaffolded a bunch of stuff up above
+			only to remove it here, but it's DRY and fast enough. Could be a target for optimization
+			if this ever gets too slow.
+		*/
+		if (onlyUpdateNoteAtPath !== undefined) {
+			actualFilesMap = actualFilesMap.filter(fileMap => fileMap.file.path === onlyUpdateNoteAtPath);
+		}
+
 		let propertyAddCount = 0;
 		actualFilesMap.forEach(fileMap => {
-			propertyAddCount = propertyAddCount + Object.keys(fileMap.props).length
+			if (fileMap.props === null) throw new Error('Cannot push canvas data to notes - fileMap.props was null');
+			propertyAddCount = propertyAddCount + Object.keys(fileMap.props!).length
 		})
 
 		let modifiedFileCount = actualFilesMap.length;
 
 		actualFilesMap.forEach(fileMap => this.app.fileManager.processFrontMatter(fileMap.file, (frontmatter) => {
 			/* have to directly mutate this object, a bit tedious */
-			Object.keys(fileMap.props).forEach(key => {
+			Object.keys(fileMap.props!).forEach(key => {
 				if (overwrite || !frontmatter.hasOwnProperty(key)) {
-					frontmatter[key] = fileMap.props[key];
+					frontmatter[key] = fileMap.props![key];
 					return
 				}
 
 				//force array
 				if (!Array.isArray(frontmatter[key])) frontmatter[key] = [frontmatter[key]];
 				/* Don't add duplicate values to existing props */
-				fileMap.props[key] = fileMap.props[key].filter((val: any) => !frontmatter[key].some((og: any) => og === val))
-				frontmatter[key] = [...frontmatter[key], ...fileMap.props[key]];
+				fileMap.props![key] = fileMap.props![key].filter((val: any) => !frontmatter[key].some((og: any) => og === val))
+				frontmatter[key] = [...frontmatter[key], ...fileMap.props![key]];
 			})
 
 		}));
@@ -768,7 +668,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 		})
 
 		// save to file
-		await this.app.vault.modify(fileView.file, JSON.stringify(visibleCanvasData));
+		this.app.vault.process(fileView.file, () => JSON.stringify(visibleCanvasData));
 
 		function makeNodeOrGroupOfNodesFor(propVals: string[], label: string): AllCanvasNodeData[] {
 			const returnObj: AllCanvasNodeData[] = [];
@@ -830,14 +730,12 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		if (canvasMap === undefined) throw new Error("Canvas Map was unable to be created");
 
-		let connectionTargets = this.buildConnectionTargets(canvasMap);
+		let connectionTargets = SemanticCanvasPlugin.buildConnectionTargets(canvasMap);
 
 		let edgesToBuild: CanvasEdgeData[] = [];
 		let nodesToBuild: AllCanvasNodeData[] = [];
 		nodesToPullFrom.forEach((node: any) => {
-			console.log(node)
 			let noteProps = this.getNoteData(typeof node.file === 'string' ? node.file : node.file.path);
-			console.log(noteProps)
 			noteProps.forEach(prop => {
 				const key = Object.keys(prop)[0];
 				const vals = prop[key];
@@ -898,54 +796,41 @@ export default class SemanticCanvasPlugin extends Plugin {
 			})
 		})
 
-		console.log(edgesToBuild, nodesToBuild)
-
 		// push new edges & nodes to the canvas data
 		visibleCanvasData.edges.push(...edgesToBuild);
 		visibleCanvasData.nodes.push(...nodesToBuild);
 		// save to file
-		await this.app.vault.modify(fileView.file, JSON.stringify(visibleCanvasData));
+		this.app.vault.process(fileView.file, () => JSON.stringify(visibleCanvasData));
 
 		return
 
 		function edgeAlreadyExists(fromId: string, toId: string, labeled: string): boolean {
 			return visibleCanvasData.edges.some(edge => edge.fromNode === fromId && edge.toNode === toId && edge.label === labeled)
 		}
-
-	}
-
-	static determineSides(fromNode: CanvasNodeData, toNode: CanvasNodeData): { from: NodeSide, to: NodeSide } {
-		let verticalDelta = fromNode.y - toNode.y;
-		let horizontalDelta = fromNode.x - toNode.x;
-		if (Math.abs(verticalDelta) > Math.abs(horizontalDelta)) {
-			if (verticalDelta > 0) return { from: 'top', to: 'bottom' }
-			return { from: 'bottom', to: 'top' }
-		}
-		if (horizontalDelta > 0) return { from: 'left', to: 'right' }
-		return { from: 'right', to: 'left' }
 	}
 
 	/**
 	 * Gets the **list type** properties from the passed-in note file
-	 * @param file the .md file to get properties from
+	 * @param file the path of the .md file to get properties from
 	 * @returns list-type properties map
 	 */
 	getNoteData(filepath: string): Array<{ [index: string]: Array<string> }> {
-		// console.log(file);
 
 		const allProperties = this.app.metadataCache.getCache(filepath)?.frontmatter;
 		let listTypeProps: Array<{ [index: string]: Array<string> }> = [];
 
-		const includeAlias = this.settings.includeAlias;
+		const excludeKeys = this.settings.excludeKeys.split(',').map(key => key.trim().toUpperCase());
 
 		if (allProperties !== undefined) {
 			Object.keys(allProperties).forEach((key) => {
-				if (!includeAlias && (key === 'alias' || key === 'aliases')) return
+				if (excludeKeys.some(exclusion => exclusion === key.toUpperCase())) return
 				if (Array.isArray(allProperties[key])) listTypeProps.push({ [key]: allProperties[key] });
 			})
 		}
 		return listTypeProps;
 	}
+
+	//#region --- Static Helper Methods
 
 	/**
 	 * Creates a list of pre-existing things on a canvas that a hypothetical node
@@ -954,7 +839,7 @@ export default class SemanticCanvasPlugin extends Plugin {
 	 * and the value is a string-based representation of the content for comparison
 	 * @param nodes 
 	 */
-	buildConnectionTargets(nodes: CanvasMap) {
+	static buildConnectionTargets(nodes: CanvasMap) {
 		let returnArray: {
 			nodeType: "card" | "file" | "url" | "group",
 			id: string,
@@ -1033,6 +918,36 @@ export default class SemanticCanvasPlugin extends Plugin {
 		return returnArray
 
 
+	}
+
+	static determineSides(fromNode: CanvasNodeData, toNode: CanvasNodeData): { from: NodeSide, to: NodeSide } {
+		let verticalDelta = fromNode.y - toNode.y;
+		let horizontalDelta = fromNode.x - toNode.x;
+		if (Math.abs(verticalDelta) > Math.abs(horizontalDelta)) {
+			if (verticalDelta > 0) return { from: 'top', to: 'bottom' }
+			return { from: 'bottom', to: 'top' }
+		}
+		if (horizontalDelta > 0) return { from: 'left', to: 'right' }
+		return { from: 'right', to: 'left' }
+	}
+
+
+	static isGroup(val: Array<string>) {
+		return val.length > 1;
+	}
+
+	static isFile(val: string): boolean {
+		if (val.substring(0, 2) !== '[[') return false;
+		if (val.substring(val.length - 2) !== ']]') return false;
+		if (val.split('[[').length !== 2) return false;
+		return true
+	}
+
+	static isURL(val: string): boolean {
+		if (val.toUpperCase().substring(0, 4) !== 'HTTP') return false
+		if (!val.contains('//')) return false
+		if (val.length < 8) return false
+		return true
 	}
 
 	static async getCanvasData(file: TFile | null): Promise<RawCanvasObj | undefined> {
@@ -1158,6 +1073,8 @@ export default class SemanticCanvasPlugin extends Plugin {
 		}
 	}
 
+	//#endregion
+
 	onunload() {
 		//nothing to do
 	}
@@ -1225,14 +1142,16 @@ class SemanticCanvasSettingsTab extends PluginSettingTab {
 		}
 
 		new Setting(containerEl)
-			.setName('Create nodes for "Alias" property values')
-			.setDesc(`When populating a canvas based on a note's properties, should the "alias" property create nodes. Default: false`)
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.includeAlias)
-				.onChange(async (value) => {
-					this.plugin.settings.includeAlias = value;
-					await this.plugin.saveSettings();
-				}));
+			.setName('Keys to ignore')
+			.setDesc(`A comma-separated list of property keys to ignore (case-insensitive).`)
+			.addTextArea((text) => {
+				text
+					.setValue(this.plugin.settings.excludeKeys)
+					.onChange(async (value) => {
+						this.plugin.settings.excludeKeys = value;
+						await this.plugin.saveSettings();
+					})
+			});
 
 		containerEl.createEl('h1', { text: 'Canvas → set note properties' });
 		containerEl.createEl('h2', { text: 'Toggle property setting per type' });

@@ -10,7 +10,7 @@ Set properties for all Markdown files included in your canvas based on their gro
 Now capable of more fine-grained controls:
 - Pull properties into existing canvases
 - Update properties for individual nodes, rather than all at once
-- Option to ignore "alias"/"alises" key 
+- Option to ignore a set of customizable set of property keys 
 
 ## Example Screenshots
 
@@ -41,10 +41,6 @@ Open a canvas then use command palette or file menu to run:
     - Will add to note properties without removing any
 - `Semantic Canvas: Overwrite Note Properties based on canvas`
     - Will replace note properties
-- `Semantic Canvas: Pull in properties for all notes on canvas`
-    - Will create new nodes & connections on the canvas based on properties of notes
-- `Semantic Canvas: Show existing connections between notes on canvas`
-    - Will create new connections (but not nodes) in the canvas based on properties of notes
 
 Open a note then use use command palette or file menu to run:
 - `Semantic Canvas: Create canvas based on note`
@@ -54,6 +50,8 @@ Right click on nodes in a canvas to:
     - Will create new nodes and arrows to fully represent all the list-type properties for the selected node
 - `Show existing connections`
     - Will create new arrows, but not nodes
+- `Append properties in note` & `Overwrite properties in note`
+    - Will update the note frontmatter according to the connections in the canvas
 
 ### Behaviors
 > 📖 Node Types  

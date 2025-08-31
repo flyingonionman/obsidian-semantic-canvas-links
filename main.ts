@@ -19,6 +19,9 @@ export interface SemanticCanvasPluginSettings {
 	 * List of keys to ignore when doing all the things involving note properties
 	 */
 	excludeKeys: string;
+	/* Backlinks settings */
+	useBacklinks: boolean;
+	backlinksHeading: string;
 }
 
 export enum Location {
@@ -71,14 +74,100 @@ const DEFAULT_SETTINGS: SemanticCanvasPluginSettings = {
 	useUrls: true,
 	useFiles: true,
 	useGroups: false,
-	excludeKeys: 'alias,aliases,tags,cssClasses'
+	excludeKeys: 'alias,aliases,tags,cssClasses',
+	// Backlinks settings
+	useBacklinks: true,
+	backlinksHeading: '## Connections'
 }
 
 export default class SemanticCanvasPlugin extends Plugin {
 	settings: SemanticCanvasPluginSettings;
+	lastCanvasEdges: Map<string, CanvasEdgeData> = new Map();
 
 	async onload() {
 		await this.loadSettings();
+
+		/**
+		 * Monitor canvas changes to automatically manage backlinks
+		 */
+		this.registerEvent(
+			this.app.workspace.on('file-open', async (file: TFile | null) => {
+				if (!file || file.extension !== 'canvas' || !this.settings.useBacklinks) return;
+				
+				// Store the initial canvas state
+				const canvasData = await SemanticCanvasPlugin.getCanvasData(file);
+				if (!canvasData) return;
+				
+				// Store initial edges for comparison
+				this.lastCanvasEdges = new Map();
+				canvasData.edges.forEach(edge => {
+					this.lastCanvasEdges.set(edge.id, edge);
+				});
+			})
+		);
+
+		/**
+		 * Monitor canvas modifications to detect edge changes
+		 */
+		this.registerEvent(
+			this.app.vault.on('modify', async (file: TFile) => {
+				if (file.extension !== 'canvas' || !this.settings.useBacklinks) return;
+				
+				const canvasData = await SemanticCanvasPlugin.getCanvasData(file);
+				if (!canvasData) return;
+				
+				const currentEdges = new Map<string, CanvasEdgeData>();
+				canvasData.edges.forEach(edge => {
+					currentEdges.set(edge.id, edge);
+				});
+				
+				if (!this.lastCanvasEdges) {
+					this.lastCanvasEdges = currentEdges;
+					return;
+				}
+				
+				// Find newly added edges
+				for (const [id, edge] of currentEdges) {
+					if (!this.lastCanvasEdges.has(id)) {
+						// New edge detected
+						const fromNode = canvasData.nodes.find((n: any) => n.id === edge.fromNode);
+						const toNode = canvasData.nodes.find((n: any) => n.id === edge.toNode);
+						
+						if (fromNode?.type === 'file' && toNode?.type === 'file') {
+							const fromFile = this.app.vault.getFileByPath(fromNode.file);
+							const toFile = this.app.vault.getFileByPath(toNode.file);
+							
+							if (fromFile && toFile) {
+								const isBidirectional = edge.fromEnd === 'arrow' || edge.toEnd === 'none';
+								await this.addBacklinkBetweenFiles(fromFile, toFile, isBidirectional);
+							}
+						}
+					}
+				}
+				
+				// Find removed edges
+				for (const [id, edge] of this.lastCanvasEdges) {
+					if (!currentEdges.has(id)) {
+						// Edge was removed
+						const fromNode = canvasData.nodes.find((n: any) => n.id === edge.fromNode);
+						const toNode = canvasData.nodes.find((n: any) => n.id === edge.toNode);
+						
+						if (fromNode?.type === 'file' && toNode?.type === 'file') {
+							const fromFile = this.app.vault.getFileByPath(fromNode.file);
+							const toFile = this.app.vault.getFileByPath(toNode.file);
+							
+							if (fromFile && toFile) {
+								const isBidirectional = edge.fromEnd === 'arrow' || edge.toEnd === 'none';
+								await this.removeBacklinkBetweenFiles(fromFile, toFile, isBidirectional);
+							}
+						}
+					}
+				}
+				
+				// Update stored edges
+				this.lastCanvasEdges = currentEdges;
+			})
+		);
 
 		/* This command will replace the values of an already-existing property */
 		this.addCommand({
@@ -537,6 +626,192 @@ export default class SemanticCanvasPlugin extends Plugin {
 	}
 
 	/**
+	 * Adds or updates backlinks in a markdown file
+	 * @param file The file to add backlinks to
+	 * @param backlinks Array of backlinks to add
+	 */
+	async updateBacklinksInFile(file: TFile, backlinks: string[]) {
+		if (!this.settings.useBacklinks || backlinks.length === 0) return;
+		
+		const content = await this.app.vault.read(file);
+		const heading = this.settings.backlinksHeading;
+		const headingRegex = new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm');
+		
+		// Remove duplicates and format backlinks
+		const uniqueBacklinks = [...new Set(backlinks)];
+		const formattedBacklinks = uniqueBacklinks.map(link => {
+			// If it's already a wikilink, use it as is
+			if (link.startsWith('[[') && link.endsWith(']]')) {
+				return `- ${link}`;
+			}
+			// Otherwise, format it as a wikilink
+			return `- [[${link}]]`;
+		}).join('\n');
+		
+		let newContent: string;
+		
+		// Check if the heading already exists
+		const headingMatch = content.match(headingRegex);
+		
+		if (headingMatch) {
+			// Heading exists, replace the section
+			const headingIndex = headingMatch.index!;
+			const afterHeading = content.substring(headingIndex + headingMatch[0].length);
+			
+			// Find the next heading or end of file
+			const nextHeadingMatch = afterHeading.match(/^#+\s/m);
+			const sectionEndIndex = nextHeadingMatch ? nextHeadingMatch.index! : afterHeading.length;
+			
+			// Build the new content
+			newContent = content.substring(0, headingIndex) +
+				`${heading}\n${formattedBacklinks}\n` +
+				(nextHeadingMatch ? '\n' : '') +
+				afterHeading.substring(sectionEndIndex);
+		} else {
+			// Heading doesn't exist, add it at the end
+			const trimmedContent = content.trimEnd();
+			newContent = `${trimmedContent}\n\n${heading}\n${formattedBacklinks}\n`;
+		}
+		
+		await this.app.vault.modify(file, newContent);
+	}
+
+	/**
+	 * Adds a single backlink between two files automatically
+	 * @param fromFile The source file
+	 * @param toFile The target file
+	 * @param bidirectional Whether to add backlinks in both directions
+	 */
+	async addBacklinkBetweenFiles(fromFile: TFile, toFile: TFile, bidirectional: boolean) {
+		if (!this.settings.useBacklinks) return;
+		
+		// Add backlink in fromFile pointing to toFile
+		await this.addSingleBacklink(fromFile, toFile);
+		
+		// If bidirectional, add backlink in toFile pointing to fromFile
+		if (bidirectional) {
+			await this.addSingleBacklink(toFile, fromFile);
+		}
+	}
+
+	/**
+	 * Adds a single backlink to a file
+	 * @param file The file to add the backlink to
+	 * @param linkedFile The file to link to
+	 */
+	async addSingleBacklink(file: TFile, linkedFile: TFile) {
+		if (!this.settings.useBacklinks) return;
+		
+		const content = await this.app.vault.read(file);
+		const heading = this.settings.backlinksHeading;
+		const headingRegex = new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm');
+		const linkText = `[[${linkedFile.basename}]]`;
+		const linkLine = `- ${linkText}`;
+		
+		// Check if the heading already exists
+		const headingMatch = content.match(headingRegex);
+		
+		let newContent: string;
+		
+		if (headingMatch) {
+			// Heading exists, check if link already exists
+			const headingIndex = headingMatch.index!;
+			const afterHeading = content.substring(headingIndex + headingMatch[0].length);
+			
+			// Find the next heading or end of file
+			const nextHeadingMatch = afterHeading.match(/^#+\s/m);
+			const sectionEndIndex = nextHeadingMatch ? nextHeadingMatch.index! : afterHeading.length;
+			const sectionContent = afterHeading.substring(0, sectionEndIndex);
+			
+			// Check if the link already exists
+			if (sectionContent.includes(linkText)) {
+				return; // Link already exists
+			}
+			
+			// Add the new link
+			const existingLinks = sectionContent.trim();
+			const updatedLinks = existingLinks ? `${existingLinks}\n${linkLine}` : linkLine;
+			
+			newContent = content.substring(0, headingIndex) +
+				`${heading}\n${updatedLinks}\n` +
+				(nextHeadingMatch ? '\n' : '') +
+				afterHeading.substring(sectionEndIndex);
+		} else {
+			// Heading doesn't exist, add it at the end
+			const trimmedContent = content.trimEnd();
+			newContent = `${trimmedContent}\n\n${heading}\n${linkLine}\n`;
+		}
+		
+		await this.app.vault.modify(file, newContent);
+	}
+
+	/**
+	 * Removes a backlink between two files
+	 * @param fromFile The source file
+	 * @param toFile The target file  
+	 * @param bidirectional Whether to remove backlinks in both directions
+	 */
+	async removeBacklinkBetweenFiles(fromFile: TFile, toFile: TFile, bidirectional: boolean) {
+		if (!this.settings.useBacklinks) return;
+		
+		// Remove backlink in fromFile pointing to toFile
+		await this.removeSingleBacklink(fromFile, toFile);
+		
+		// If bidirectional, remove backlink in toFile pointing to fromFile
+		if (bidirectional) {
+			await this.removeSingleBacklink(toFile, fromFile);
+		}
+	}
+
+	/**
+	 * Removes a single backlink from a file
+	 * @param file The file to remove the backlink from
+	 * @param linkedFile The file to unlink
+	 */
+	async removeSingleBacklink(file: TFile, linkedFile: TFile) {
+		if (!this.settings.useBacklinks) return;
+		
+		const content = await this.app.vault.read(file);
+		const heading = this.settings.backlinksHeading;
+		const headingRegex = new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm');
+		const linkText = `[[${linkedFile.basename}]]`;
+		const linkLineRegex = new RegExp(`^\\s*-\\s*\\[\\[${linkedFile.basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\]\\s*$`, 'gm');
+		
+		// Check if the heading exists
+		const headingMatch = content.match(headingRegex);
+		
+		if (!headingMatch) return; // No heading, nothing to remove
+		
+		const headingIndex = headingMatch.index!;
+		const afterHeading = content.substring(headingIndex + headingMatch[0].length);
+		
+		// Find the next heading or end of file
+		const nextHeadingMatch = afterHeading.match(/^#+\s/m);
+		const sectionEndIndex = nextHeadingMatch ? nextHeadingMatch.index! : afterHeading.length;
+		const sectionContent = afterHeading.substring(0, sectionEndIndex);
+		
+		// Remove the link line
+		const updatedSection = sectionContent.replace(linkLineRegex, '').trim();
+		
+		// If the section is now empty, remove the entire heading
+		let newContent: string;
+		if (!updatedSection) {
+			// Remove the heading entirely
+			const beforeHeading = content.substring(0, headingIndex).trimEnd();
+			const afterSection = afterHeading.substring(sectionEndIndex).trimStart();
+			newContent = beforeHeading + (afterSection ? '\n\n' + afterSection : '');
+		} else {
+			// Keep the heading but with updated content
+			newContent = content.substring(0, headingIndex) +
+				`${heading}\n${updatedSection}` +
+				(nextHeadingMatch ? '\n\n' : '') +
+				afterHeading.substring(sectionEndIndex);
+		}
+		
+		await this.app.vault.modify(file, newContent);
+	}
+
+	/**
 	 * The main function for using an existing canvas to update note properties.
 	 * @param overwrite `true` will overwrite existing values for keys
 	 */
@@ -606,22 +881,72 @@ export default class SemanticCanvasPlugin extends Plugin {
 
 		let modifiedFileCount = actualFilesMap.length;
 
-		actualFilesMap.forEach(fileMap => this.app.fileManager.processFrontMatter(fileMap.file, (frontmatter) => {
-			/* have to directly mutate this object, a bit tedious */
-			Object.keys(fileMap.props!).forEach(key => {
-				if (overwrite || !frontmatter.hasOwnProperty(key)) {
-					frontmatter[key] = fileMap.props![key];
-					return
+		// Process frontmatter and collect backlinks
+		const backlinksMap = new Map<TFile, Set<string>>();
+		
+		// Helper function to add a backlink
+		const addBacklink = (file: TFile, link: string) => {
+			if (!backlinksMap.has(file)) {
+				backlinksMap.set(file, new Set<string>());
+			}
+			backlinksMap.get(file)!.add(link);
+		};
+		
+		actualFilesMap.forEach(fileMap => {
+			this.app.fileManager.processFrontMatter(fileMap.file, (frontmatter) => {
+				/* have to directly mutate this object, a bit tedious */
+				Object.keys(fileMap.props!).forEach(key => {
+					const values = fileMap.props![key];
+					
+					if (overwrite || !frontmatter.hasOwnProperty(key)) {
+						frontmatter[key] = fileMap.props![key];
+						return
+					}
+
+					//force array
+					if (!Array.isArray(frontmatter[key])) frontmatter[key] = [frontmatter[key]];
+					/* Don't add duplicate values to existing props */
+					fileMap.props![key] = fileMap.props![key].filter((val: any) => !frontmatter[key].some((og: any) => og === val))
+					frontmatter[key] = [...frontmatter[key], ...fileMap.props![key]];
+				})
+			});
+		});
+		
+		// Process backlinks if enabled
+		if (this.settings.useBacklinks && data && data.edges && data.files) {
+			const files = data.files;
+			data.edges.forEach(edge => {
+				// Get the nodes involved in this edge
+				const fromNode = files.find(f => f.id === edge.fromNode);
+				const toNode = files.find(f => f.id === edge.toNode);
+				
+				if (fromNode && toNode) {
+					// Both nodes are files, add backlinks
+					const fromFile = this.app.vault.getFileByPath(fromNode.file);
+					const toFile = this.app.vault.getFileByPath(toNode.file);
+					
+				if (fromFile && toFile) {
+						// Create wikilinks
+						const fromWikilink = `[[${fromFile.basename}]]`;
+						const toWikilink = `[[${toFile.basename}]]`;
+						
+						// Add backlink from -> to
+						addBacklink(fromFile, toWikilink);
+						
+						// If bidirectional, add backlink to -> from
+						if (edge.isBidirectional) {
+							addBacklink(toFile, fromWikilink);
+						}
+					}
 				}
-
-				//force array
-				if (!Array.isArray(frontmatter[key])) frontmatter[key] = [frontmatter[key]];
-				/* Don't add duplicate values to existing props */
-				fileMap.props![key] = fileMap.props![key].filter((val: any) => !frontmatter[key].some((og: any) => og === val))
-				frontmatter[key] = [...frontmatter[key], ...fileMap.props![key]];
-			})
-
-		}));
+			});
+		}
+		
+		// Update backlinks in files
+		for (const [file, backlinksSet] of backlinksMap) {
+			const backlinks = Array.from(backlinksSet);
+			await this.updateBacklinksInFile(file, backlinks);
+		}
 
 		if (modifiedFileCount > 0) {
 			new Notice(`Successfully set ${propertyAddCount} prop(s) in ${modifiedFileCount} file(s)`)
@@ -1240,6 +1565,31 @@ class SemanticCanvasSettingsTab extends PluginSettingTab {
 					this.plugin.settings.groupDefault = value;
 					await this.plugin.saveSettings();
 				}));
+
+		containerEl.createEl('h1', { text: 'Automatic Backlinks' });
+		new Setting(containerEl)
+			.setName('Enable automatic backlinks')
+			.setDesc('Automatically add backlinks at the bottom of notes when connections are made on the canvas')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useBacklinks)
+				.onChange(async (value) => {
+					this.plugin.settings.useBacklinks = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		if (this.plugin.settings.useBacklinks) {
+			new Setting(containerEl)
+				.setName('Backlinks section heading')
+				.setDesc('The heading to use for the backlinks section at the bottom of notes')
+				.addText(text => text
+					.setPlaceholder('## Connections')
+					.setValue(this.plugin.settings.backlinksHeading)
+					.onChange(async (value) => {
+						this.plugin.settings.backlinksHeading = value || '## Connections';
+						await this.plugin.saveSettings();
+					}));
+		}
 	}
 }
 
